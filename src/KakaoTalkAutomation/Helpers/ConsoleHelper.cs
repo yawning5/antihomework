@@ -34,6 +34,7 @@ public static class ConsoleHelper
         Console.WriteLine("  4. 채팅방 목록 보기");
         Console.WriteLine("  5. 카카오톡 연결 상태 확인");
         Console.WriteLine("  6. UI 구조 진단 (디버그)");
+        Console.WriteLine("  7. 비활성 캡처 테스트 (OCR 준비)");
         Console.WriteLine("  0. 종료");
         Console.WriteLine();
         Console.Write("선택: ");

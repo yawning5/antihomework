@@ -1,5 +1,3 @@
-using System.Runtime.InteropServices;
-using System.Text;
 using System.Text.RegularExpressions;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Conditions;
@@ -13,16 +11,11 @@ namespace KakaoTalkAutomation.Core;
 /// <summary>
 /// 카카오톡 채팅방에서 메시지를 읽어오는 클래스
 ///
-/// 카카오톡은 커스텀 컨트롤(EVA_VH_ListControl_Dblclk)을 사용하여
-/// 표준 UI Automation으로 메시지 텍스트에 직접 접근할 수 없습니다.
+/// PrintWindow(비활성 캡처) + Windows OCR을 결합하여
+/// 카카오톡 창에 포커스를 주지 않고 백그라운드에서 메시지를 읽습니다.
 ///
-/// 따라서 메시지 목록 영역에 포커스를 주고
-/// Ctrl+A(전체 선택) → Ctrl+C(복사) 후 클립보드에서 텍스트를 읽어옵니다.
-///
-/// 클립보드 텍스트 형식 예시:
-///   [홍길동] [오후 1:30] 안녕하세요
-///   [홍길동] [오후 1:31] 반갑습니다
-///   [나] [오후 1:32] 네 안녕하세요!
+/// ※ 이 방식은 화면을 빼앗지 않으므로 사용자가 PC를 쓰는 동안에도
+///   방해 없이 모니터링이 가능합니다.
 /// </summary>
 public class MessageReader : IDisposable
 {
@@ -33,33 +26,6 @@ public class MessageReader : IDisposable
     /// 채팅방별 마지막으로 읽은 메시지 해시를 추적합니다.
     /// </summary>
     private readonly Dictionary<IntPtr, HashSet<string>> _knownMessageHashes = new();
-
-    // Win32 API
-    [DllImport("user32.dll")]
-    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
-
-    [DllImport("user32.dll")]
-    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
-
-    [DllImport("kernel32.dll")]
-    private static extern uint GetCurrentThreadId();
-
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-
-    // 키 상수
-    private const byte VK_CONTROL = 0x11;
-    private const byte VK_A = 0x41;
-    private const byte VK_C = 0x43;
-    private const byte VK_ESCAPE = 0x1B;
-    private const uint KEYEVENTF_KEYDOWN = 0x0000;
-    private const uint KEYEVENTF_KEYUP = 0x0002;
 
     public MessageReader(ILogger<MessageReader> logger)
     {
@@ -110,34 +76,45 @@ public class MessageReader : IDisposable
                 return true;
             }, IntPtr.Zero);
 
-            // 3단계: 클립보드 기반 메시지 읽기 테스트
+            // 3단계: OCR 텍스트 인식 테스트
             Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("\n  [3단계] 클립보드 기반 메시지 읽기 테스트:");
+            Console.WriteLine("\n  [3단계] OCR 텍스트 인식 테스트:");
             Console.ResetColor();
 
-            var clipText = CaptureMessagesViaClipboard(chatRoomHandle);
-            if (string.IsNullOrEmpty(clipText))
+            using var bmp = CaptureHelper.CaptureWindow(chatRoomHandle);
+            if (bmp != null)
             {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("    클립보드에서 텍스트를 가져오지 못했습니다.");
+                var text = OcrHelper.RecognizeTextAsync(bmp).GetAwaiter().GetResult();
+                if (!string.IsNullOrEmpty(text))
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"    OCR 성공! ({text.Length}자 인식)");
+                    Console.ResetColor();
+
+                    var lines = text.Split('\n');
+                    var showCount = Math.Min(lines.Length, 15);
+                    Console.WriteLine($"    총 {lines.Length}줄 (마지막 {showCount}줄 표시):");
+                    for (int i = Math.Max(0, lines.Length - showCount); i < lines.Length; i++)
+                    {
+                        var line = lines[i].TrimEnd('\r');
+                        var trimmed = line.Length > 80 ? line[..80] + "..." : line;
+                        Console.ForegroundColor = ConsoleColor.DarkGray;
+                        Console.WriteLine($"      {trimmed}");
+                    }
+                    Console.ResetColor();
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("    OCR 텍스트 인식 실패");
+                    Console.ResetColor();
+                }
             }
             else
             {
-                Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine($"    클립보드 텍스트 길이: {clipText.Length}자");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("    캡처 실패");
                 Console.ResetColor();
-
-                // 마지막 5줄만 출력
-                var lines = clipText.Split('\n');
-                var showCount = Math.Min(lines.Length, 10);
-                Console.WriteLine($"    총 {lines.Length}줄 (마지막 {showCount}줄 표시):");
-                for (int i = Math.Max(0, lines.Length - showCount); i < lines.Length; i++)
-                {
-                    var line = lines[i].TrimEnd('\r');
-                    var trimmed = line.Length > 80 ? line[..80] + "..." : line;
-                    Console.ForegroundColor = ConsoleColor.DarkGray;
-                    Console.WriteLine($"      {trimmed}");
-                }
             }
 
             Console.ForegroundColor = ConsoleColor.Cyan;
@@ -154,7 +131,8 @@ public class MessageReader : IDisposable
 
     /// <summary>
     /// 채팅방에서 모든 메시지를 읽어옵니다.
-    /// 클립보드 기반 방식을 사용합니다.
+    /// PrintWindow(비활성 캡처) + Windows OCR 방식을 사용합니다.
+    /// 화면 제어권을 뺏지 않습니다.
     /// </summary>
     public List<ParsedMessage> ReadMessages(IntPtr chatRoomHandle)
     {
@@ -162,15 +140,25 @@ public class MessageReader : IDisposable
 
         try
         {
-            var clipText = CaptureMessagesViaClipboard(chatRoomHandle);
-            if (string.IsNullOrEmpty(clipText))
+            // 1. 비활성 캡처 (포커스 뺏지 않음)
+            using var bmp = CaptureHelper.CaptureWindow(chatRoomHandle);
+            if (bmp == null)
             {
-                _logger.LogWarning("클립보드에서 메시지를 가져오지 못했습니다.");
+                _logger.LogWarning("채팅방 캡처 실패");
                 return messages;
             }
 
-            messages = ParseClipboardText(clipText);
-            _logger.LogDebug("메시지 {Count}개 파싱 완료", messages.Count);
+            // 2. OCR로 텍스트 인식
+            var ocrText = OcrHelper.RecognizeTextAsync(bmp).GetAwaiter().GetResult();
+            if (string.IsNullOrEmpty(ocrText))
+            {
+                _logger.LogWarning("OCR 텍스트 인식 실패");
+                return messages;
+            }
+
+            // 3. OCR 텍스트 파싱
+            messages = ParseOcrText(ocrText);
+            _logger.LogDebug("OCR 메시지 {Count}개 파싱 완료", messages.Count);
         }
         catch (Exception ex)
         {
@@ -237,375 +225,187 @@ public class MessageReader : IDisposable
         _logger.LogInformation("채팅방 메시지 초기화: {Count}개 (이미 읽음 처리)", allMessages.Count);
     }
 
-    // 마우스/좌표 Win32 API
-    [DllImport("user32.dll")]
-    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetCursorPos(int x, int y);
-
-    [DllImport("user32.dll")]
-    private static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, UIntPtr dwExtraInfo);
-
-    [DllImport("user32.dll")]
-    private static extern bool GetCursorPos(out POINT lpPoint);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT { public int Left, Top, Right, Bottom; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int X, Y; }
-
-    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
-    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
-
-    /// <summary>
-    /// 카카오톡 채팅방의 메시지 목록 영역에서 텍스트를 클립보드로 복사합니다.
-    ///
-    /// 동작 흐름:
-    ///   1. 채팅방 창을 포그라운드로 가져옴
-    ///   2. 메시지 목록 영역(EVA_VH_ListControl_Dblclk)을 마우스 클릭하여 포커스
-    ///   3. Ctrl+A (전체 선택) → Ctrl+C (복사)
-    ///   4. 클립보드에서 텍스트 읽기
-    ///
-    /// ※ Escape 키는 절대 보내지 않음 (카카오톡에서 ESC = 창 닫기)
-    /// </summary>
-    private string? CaptureMessagesViaClipboard(IntPtr chatRoomHandle)
-    {
-        try
-        {
-            // 기존 클립보드 내용 백업
-            string? previousClipboard = GetClipboardText();
-
-            // 1. 창 활성화
-            ForceActivateWindow(chatRoomHandle);
-            Thread.Sleep(400);
-
-            // 2. 메시지 목록 영역을 마우스 클릭하여 포커스
-            var messageListHandle = FindMessageListControl(chatRoomHandle);
-            if (messageListHandle != IntPtr.Zero)
-            {
-                ClickOnControl(messageListHandle);
-                Thread.Sleep(300);
-            }
-            else
-            {
-                _logger.LogWarning("메시지 목록 컨트롤을 찾지 못했습니다.");
-                // 채팅방 창의 중앙 상단 영역을 클릭 (메시지 목록은 보통 위쪽에 위치)
-                ClickOnWindowCenter(chatRoomHandle, yOffsetRatio: 0.3);
-                Thread.Sleep(300);
-            }
-
-            // 3. Ctrl+A (전체 선택)
-            keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
-            Thread.Sleep(50);
-            keybd_event(VK_A, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
-            Thread.Sleep(50);
-            keybd_event(VK_A, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-            Thread.Sleep(50);
-            keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-            Thread.Sleep(500); // 선택 완료 대기 (충분히)
-
-            // 4. Ctrl+C (복사)
-            keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
-            Thread.Sleep(50);
-            keybd_event(VK_C, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
-            Thread.Sleep(50);
-            keybd_event(VK_C, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-            Thread.Sleep(50);
-            keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-            Thread.Sleep(500); // 복사 완료 대기
-
-            // 5. 클립보드에서 텍스트 읽기
-            var clipText = GetClipboardText();
-
-            // 6. 메시지 목록 아무 곳이나 한번 더 클릭 (선택 해제 - ESC 대신)
-            if (messageListHandle != IntPtr.Zero)
-            {
-                ClickOnControl(messageListHandle);
-            }
-
-            // 클립보드 내용 확인
-            if (string.IsNullOrWhiteSpace(clipText))
-            {
-                _logger.LogDebug("클립보드가 비어있음 - 복사 실패");
-                return null;
-            }
-
-            if (clipText == previousClipboard)
-            {
-                _logger.LogDebug("클립보드 내용 변화 없음 - 복사 실패");
-                return null;
-            }
-
-            _logger.LogDebug("클립보드에서 {Length}자 읽기 성공", clipText.Length);
-            return clipText;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "클립보드 기반 메시지 캡처 실패");
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Win32 컨트롤의 중앙을 마우스 클릭합니다.
-    /// </summary>
-    private void ClickOnControl(IntPtr controlHandle)
-    {
-        if (GetWindowRect(controlHandle, out RECT rect))
-        {
-            // 마우스 위치 백업
-            GetCursorPos(out POINT savedPos);
-
-            // 컨트롤 중앙 좌표
-            int centerX = (rect.Left + rect.Right) / 2;
-            int centerY = (rect.Top + rect.Bottom) / 2;
-
-            // 마우스 이동 → 클릭
-            SetCursorPos(centerX, centerY);
-            Thread.Sleep(50);
-            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
-            Thread.Sleep(30);
-            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
-            Thread.Sleep(50);
-
-            // 마우스 위치 복원
-            SetCursorPos(savedPos.X, savedPos.Y);
-
-            _logger.LogDebug("컨트롤 클릭 - 좌표: ({X}, {Y})", centerX, centerY);
-        }
-        else
-        {
-            _logger.LogDebug("컨트롤 좌표를 가져올 수 없습니다: 0x{Handle:X}", controlHandle);
-        }
-    }
-
-    /// <summary>
-    /// 창의 특정 비율 위치를 마우스 클릭합니다.
-    /// </summary>
-    private void ClickOnWindowCenter(IntPtr windowHandle, double yOffsetRatio = 0.5)
-    {
-        if (GetWindowRect(windowHandle, out RECT rect))
-        {
-            GetCursorPos(out POINT savedPos);
-
-            int centerX = (rect.Left + rect.Right) / 2;
-            int targetY = rect.Top + (int)((rect.Bottom - rect.Top) * yOffsetRatio);
-
-            SetCursorPos(centerX, targetY);
-            Thread.Sleep(50);
-            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
-            Thread.Sleep(30);
-            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
-            Thread.Sleep(50);
-
-            SetCursorPos(savedPos.X, savedPos.Y);
-        }
-    }
-
-    /// <summary>
-    /// 카카오톡의 메시지 목록 컨트롤 핸들을 찾습니다.
-    /// Class: EVA_VH_ListControl_Dblclk
-    /// </summary>
-    private IntPtr FindMessageListControl(IntPtr chatRoomHandle)
-    {
-        IntPtr listHandle = IntPtr.Zero;
-
-        Win32Api.EnumChildWindows(chatRoomHandle, (hWnd, lParam) =>
-        {
-            var className = Win32Api.GetWindowClassName(hWnd);
-            if (className == "EVA_VH_ListControl_Dblclk")
-            {
-                listHandle = hWnd;
-                return false; // 찾으면 중단
-            }
-            return true;
-        }, IntPtr.Zero);
-
-        if (listHandle != IntPtr.Zero)
-        {
-            _logger.LogDebug("메시지 목록 컨트롤 발견: 0x{Handle:X}", listHandle);
-        }
-        else
-        {
-            _logger.LogDebug("EVA_VH_ListControl_Dblclk 컨트롤을 찾지 못함");
-        }
-
-        return listHandle;
-    }
-
     // ========================================
-    // 클립보드 텍스트 파싱
+    // OCR 텍스트 파싱
     // ========================================
 
     /// <summary>
-    /// 카카오톡에서 복사한 클립보드 텍스트를 파싱하여 메시지 목록을 생성합니다.
+    /// OCR로 인식된 텍스트를 파싱하여 메시지 목록을 생성합니다.
     ///
-    /// 카카오톡 복사 형식 예시:
-    ///   [홍길동] [오후 1:30] 안녕하세요
-    ///   [홍길동] [오후 1:31] 여러 줄
-    ///   메시지도 가능합니다
-    ///
-    /// 정규식 패턴: \[(.+?)\] \[(오전|오후) (\d{1,2}:\d{2})\] (.+)
+    /// 카카오톡 채팅방 화면의 OCR 텍스트 특성:
+    ///   - 보낸 사람 이름이 짧은 한 줄로 나타남
+    ///   - 메시지 내용이 그 다음 줄에 나타남
+    ///   - 시간이 "오전/오후 H:MM" 형태로 나타남
+    ///   - 날짜 구분선이 "YYYY년 M월 D일 요일" 형태로 나타남
     /// </summary>
-    private List<ParsedMessage> ParseClipboardText(string text)
+    private List<ParsedMessage> ParseOcrText(string text)
     {
         var messages = new List<ParsedMessage>();
+        var lines = text.Split('\n').Select(l => l.TrimEnd('\r').Trim()).ToArray();
 
-        // 카카오톡 메시지 패턴: [이름] [오전/오후 시:분] 내용
-        var pattern = @"^\[(.+?)\] \[(오전|오후) (\d{1,2}:\d{2})\] (.+)$";
-        var regex = new Regex(pattern, RegexOptions.Multiline);
+        string? currentSender = null;
+        var contentLines = new List<string>();
+        DateTime lastTime = DateTime.Now;
 
-        var lines = text.Split('\n');
-        ParsedMessage? currentMessage = null;
-
-        foreach (var rawLine in lines)
+        for (int i = 0; i < lines.Length; i++)
         {
-            var line = rawLine.TrimEnd('\r');
-
-            // 날짜 구분선 건너뛰기 (예: "---- 2026년 2월 12일 수요일 ----", "2026년 2월 12일 수요일")
-            if (IsDateSeparator(line)) continue;
-
-            // 빈 줄 건너뛰기
+            var line = lines[i];
             if (string.IsNullOrWhiteSpace(line)) continue;
 
-            var match = regex.Match(line);
-            if (match.Success)
+            // 날짜 구분선 건너뛰기
+            if (IsDateSeparator(line)) continue;
+
+            // 시간 패턴 확인
+            if (IsTimePattern(line))
+            {
+                lastTime = ParseKakaoTime(line);
+
+                // 시간을 만나면 이전 메시지 저장
+                if (contentLines.Count > 0 && currentSender != null)
+                {
+                    messages.Add(new ParsedMessage
+                    {
+                        Sender = currentSender,
+                        Content = string.Join(" ", contentLines),
+                        Timestamp = lastTime
+                    });
+                    contentLines.Clear();
+                }
+                continue;
+            }
+
+            // 보낸 사람 이름 판별 (짧은 텍스트, 다음 줄이 메시지)
+            if (IsSenderName(line, lines, i))
             {
                 // 이전 메시지 저장
-                if (currentMessage != null)
+                if (contentLines.Count > 0 && currentSender != null)
                 {
-                    messages.Add(currentMessage);
+                    messages.Add(new ParsedMessage
+                    {
+                        Sender = currentSender,
+                        Content = string.Join(" ", contentLines),
+                        Timestamp = lastTime
+                    });
+                    contentLines.Clear();
                 }
 
-                var sender = match.Groups[1].Value;
-                var ampm = match.Groups[2].Value;
-                var time = match.Groups[3].Value;
-                var content = match.Groups[4].Value;
+                currentSender = line;
+                continue;
+            }
 
-                currentMessage = new ParsedMessage
-                {
-                    Sender = sender,
-                    Content = content,
-                    Timestamp = ParseKakaoTime(ampm, time)
-                };
-            }
-            else if (currentMessage != null)
+            // 메시지 내용
+            if (currentSender == null)
             {
-                // 패턴에 안 맞는 줄은 이전 메시지의 연속 (여러 줄 메시지)
-                currentMessage.Content += "\n" + line;
+                currentSender = "알 수 없음";
             }
+            contentLines.Add(line);
         }
 
         // 마지막 메시지 저장
-        if (currentMessage != null)
+        if (contentLines.Count > 0 && currentSender != null)
         {
-            messages.Add(currentMessage);
+            messages.Add(new ParsedMessage
+            {
+                Sender = currentSender,
+                Content = string.Join(" ", contentLines),
+                Timestamp = lastTime
+            });
         }
 
         return messages;
     }
 
     /// <summary>
-    /// 날짜 구분선 여부를 확인합니다.
-    /// 예: "---- 2026년 2월 12일 수요일 ----"
-    ///     "2026년 2월 12일 수요일"
+    /// 텍스트가 시간 패턴인지 확인합니다.
     /// </summary>
-    private static bool IsDateSeparator(string line)
+    private static bool IsTimePattern(string text)
     {
-        line = line.Trim().Trim('-').Trim();
+        text = text.Trim();
 
-        // "YYYY년 M월 D일 요일" 패턴
-        if (Regex.IsMatch(line, @"\d{4}년\s+\d{1,2}월\s+\d{1,2}일"))
+        // "오전/오후 H:MM" 패턴
+        if (Regex.IsMatch(text, @"^(오전|오후)\s*\d{1,2}:\d{2}$"))
             return true;
 
         return false;
     }
 
     /// <summary>
-    /// 카카오톡 시간 형식 ("오전"/"오후", "HH:MM")을 DateTime으로 변환합니다.
+    /// 날짜 구분선 여부를 확인합니다.
     /// </summary>
-    private static DateTime ParseKakaoTime(string ampm, string time)
+    private static bool IsDateSeparator(string line)
+    {
+        // "YYYY년 M월 D일 요일" 패턴
+        if (Regex.IsMatch(line, @"\d{4}년\s*\d{1,2}월\s*\d{1,2}일"))
+            return true;
+
+        // "----- ... -----" 패턴
+        if (line.Count(c => c == '-') >= 4)
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// 텍스트가 보낸 사람 이름인지 휴리스틱으로 판단합니다.
+    /// </summary>
+    private static bool IsSenderName(string text, string[] allLines, int currentIndex)
+    {
+        // 너무 길면 이름이 아님 (이름은 보통 10자 이내)
+        if (text.Length > 15) return false;
+
+        // 줄바꿈 포함이면 이름이 아님
+        if (text.Contains('\n') || text.Contains('\r')) return false;
+
+        // 공백이 3개 이상이면 이름이 아님
+        if (text.Count(c => c == ' ') > 3) return false;
+
+        // 숫자만이면 이름이 아님 (읽지 않은 수 등)
+        if (text.All(c => char.IsDigit(c) || c == ',' || c == '.')) return false;
+
+        // 시간 패턴이면 이름이 아님
+        if (IsTimePattern(text)) return false;
+
+        // 다음 줄이 있고, 다음 줄이 시간이나 다른 내용이면 이름일 가능성 높음
+        if (currentIndex + 1 < allLines.Length)
+        {
+            var nextLine = allLines[currentIndex + 1].Trim();
+            // 다음 줄이 비어있지 않고 시간 패턴이 아니면 이것은 이름 + 메시지일 수 있음
+            if (!string.IsNullOrWhiteSpace(nextLine) && !IsTimePattern(nextLine) && nextLine.Length > text.Length)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 카카오톡 시간 형식을 DateTime으로 변환합니다.
+    /// </summary>
+    private static DateTime ParseKakaoTime(string timeText)
     {
         try
         {
-            var parts = time.Split(':');
-            int hour = int.Parse(parts[0]);
-            int minute = int.Parse(parts[1]);
-
-            if (ampm == "오후" && hour != 12) hour += 12;
-            else if (ampm == "오전" && hour == 12) hour = 0;
-
-            return DateTime.Today.AddHours(hour).AddMinutes(minute);
-        }
-        catch
-        {
-            return DateTime.Now;
-        }
-    }
-
-    // ========================================
-    // 유틸리티  
-    // ========================================
-
-    /// <summary>
-    /// 창을 강제로 포그라운드로 가져옵니다.
-    /// </summary>
-    private void ForceActivateWindow(IntPtr hWnd)
-    {
-        var foregroundWindow = GetForegroundWindow();
-        var currentThreadId = GetCurrentThreadId();
-        var foregroundThreadId = GetWindowThreadProcessId(foregroundWindow, out _);
-        var targetThreadId = GetWindowThreadProcessId(hWnd, out _);
-
-        if (currentThreadId != foregroundThreadId)
-            AttachThreadInput(currentThreadId, foregroundThreadId, true);
-        if (currentThreadId != targetThreadId)
-            AttachThreadInput(currentThreadId, targetThreadId, true);
-
-        Win32Api.ShowWindow(hWnd, Win32Api.SW_RESTORE);
-        Thread.Sleep(100);
-        SetForegroundWindow(hWnd);
-        Thread.Sleep(100);
-
-        if (currentThreadId != foregroundThreadId)
-            AttachThreadInput(currentThreadId, foregroundThreadId, false);
-        if (currentThreadId != targetThreadId)
-            AttachThreadInput(currentThreadId, targetThreadId, false);
-    }
-
-    /// <summary>
-    /// 클립보드에서 텍스트를 읽어옵니다.
-    /// </summary>
-    private static string? GetClipboardText()
-    {
-        string? result = null;
-        Exception? error = null;
-
-        var thread = new Thread(() =>
-        {
-            try
+            timeText = timeText.Trim();
+            var match = Regex.Match(timeText, @"(오전|오후)\s*(\d{1,2}):(\d{2})");
+            if (match.Success)
             {
-                if (System.Windows.Forms.Clipboard.ContainsText())
-                {
-                    result = System.Windows.Forms.Clipboard.GetText(System.Windows.Forms.TextDataFormat.UnicodeText);
-                }
-            }
-            catch (Exception ex)
-            {
-                error = ex;
-            }
-        });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        thread.Join(3000);
+                var ampm = match.Groups[1].Value;
+                int hour = int.Parse(match.Groups[2].Value);
+                int minute = int.Parse(match.Groups[3].Value);
 
-        return result;
+                if (ampm == "오후" && hour != 12) hour += 12;
+                else if (ampm == "오전" && hour == 12) hour = 0;
+
+                return DateTime.Today.AddHours(hour).AddMinutes(minute);
+            }
+        }
+        catch { }
+        return DateTime.Now;
     }
 
     /// <summary>
-    /// UI 요소 정보를 콘솔에 출력합니다. (진단용)
+    /// UI 요소 정보를 콘솔에 출력합니다 (진단용)
     /// </summary>
     private static void PrintElementInfo(AutomationElement el, string indent)
     {

@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "KYoCabYmv3c=",
+  "dgSpecHash": "hGJCGSb0U44=",
   "success": true,
-  "projectFilePath": "c:\\Coding\\antihomework2\\src\\KakaoTalkAutomation\\KakaoTalkAutomation.csproj",
+  "projectFilePath": "C:\\Coding\\antihomework\\src\\KakaoTalkAutomation\\KakaoTalkAutomation.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\yawning\\.nuget\\packages\\flaui.core\\4.0.0\\flaui.core.4.0.0.nupkg.sha512",
     "C:\\Users\\yawning\\.nuget\\packages\\flaui.uia3\\4.0.0\\flaui.uia3.4.0.0.nupkg.sha512",
@@ -70,7 +70,8 @@
     "C:\\Users\\yawning\\.nuget\\packages\\system.security.principal.windows\\5.0.0\\system.security.principal.windows.5.0.0.nupkg.sha512",
     "C:\\Users\\yawning\\.nuget\\packages\\system.text.encodings.web\\8.0.0\\system.text.encodings.web.8.0.0.nupkg.sha512",
     "C:\\Users\\yawning\\.nuget\\packages\\system.text.json\\8.0.0\\system.text.json.8.0.0.nupkg.sha512",
-    "C:\\Users\\yawning\\.nuget\\packages\\system.windows.extensions\\5.0.0\\system.windows.extensions.5.0.0.nupkg.sha512"
+    "C:\\Users\\yawning\\.nuget\\packages\\system.windows.extensions\\5.0.0\\system.windows.extensions.5.0.0.nupkg.sha512",
+    "C:\\Users\\yawning\\.nuget\\packages\\microsoft.windows.sdk.net.ref\\10.0.19041.56\\microsoft.windows.sdk.net.ref.10.0.19041.56.nupkg.sha512"
   ],
   "logs": []
 }

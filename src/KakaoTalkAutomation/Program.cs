@@ -134,6 +134,9 @@ public class Program
                     case "6":
                         HandleDiagnoseUI();
                         break;
+                    case "7":
+                        HandleCaptureTest();
+                        break;
                     case "0":
                         ConsoleHelper.PrintInfo("프로그램을 종료합니다...");
                         return;
@@ -534,5 +537,69 @@ public class Program
         }
 
         ConsoleHelper.PrintSeparator();
+    }
+
+    /// <summary>
+    /// 메뉴 7: 비활성 캡처 테스트 (OCR 준비용)
+    /// 카카오톡 창이 가려져 있거나 뒤에 있을 때도 캡처가 가능한지 테스트합니다.
+    /// </summary>
+    private static void HandleCaptureTest()
+    {
+        if (_finder == null) return;
+
+        var chatRooms = _finder.FindChatRooms();
+
+        if (chatRooms.Count == 0)
+        {
+            ConsoleHelper.PrintWarning("열린 채팅방이 없습니다.");
+            return;
+        }
+
+        ConsoleHelper.PrintSeparator();
+        Console.WriteLine("캡처할 채팅방 선택:");
+        for (int i = 0; i < chatRooms.Count; i++)
+        {
+            Console.WriteLine($"  {i + 1}. {chatRooms[i].Name}");
+        }
+
+        var roomInput = ConsoleHelper.ReadInput("채팅방 번호");
+        if (!int.TryParse(roomInput, out int roomIndex) || roomIndex < 1 || roomIndex > chatRooms.Count)
+        {
+            ConsoleHelper.PrintWarning("올바른 번호를 입력해주세요.");
+            return;
+        }
+
+        var selectedRoom = chatRooms[roomIndex - 1];
+        ConsoleHelper.PrintInfo($"'{selectedRoom.Name}' 채팅방의 비활성 캡처를 시도합니다...");
+
+        try
+        {
+            // 캡처 시도
+            using var bmp = CaptureHelper.CaptureWindow(selectedRoom.Handle);
+            
+            if (bmp == null)
+            {
+                ConsoleHelper.PrintError("캡처 실패 (비트맵 생성 불가)");
+                return;
+            }
+
+            // 파일로 저장
+            var filename = $"Test_{selectedRoom.Name}_{DateTime.Now:HHmmss}";
+            // 파일명에 유효하지 않은 문자 제거
+            filename = string.Join("_", filename.Split(Path.GetInvalidFileNameChars()));
+            
+            var path = CaptureHelper.SaveCapture(bmp, filename);
+
+            if (!string.IsNullOrEmpty(path))
+            {
+                ConsoleHelper.PrintSuccess("캡처 성공!");
+                Console.WriteLine($"  저장 경로: {path}");
+                ConsoleHelper.PrintInfo("해당 이미지를 열어서, 내용이 잘 보이는지(검은 화면이 아닌지) 확인해주세요.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ConsoleHelper.PrintError($"캡처 중 오류: {ex.Message}");
+        }
     }
 }
