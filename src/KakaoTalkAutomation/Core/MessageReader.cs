@@ -237,85 +237,170 @@ public class MessageReader : IDisposable
         _logger.LogInformation("채팅방 메시지 초기화: {Count}개 (이미 읽음 처리)", allMessages.Count);
     }
 
-    // ========================================
-    // 클립보드 기반 메시지 캡처
-    // ========================================
+    // 마우스/좌표 Win32 API
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll")]
+    private static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, UIntPtr dwExtraInfo);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT lpPoint);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
+
+    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
 
     /// <summary>
     /// 카카오톡 채팅방의 메시지 목록 영역에서 텍스트를 클립보드로 복사합니다.
     ///
     /// 동작 흐름:
     ///   1. 채팅방 창을 포그라운드로 가져옴
-    ///   2. 메시지 목록 영역(EVA_VH_ListControl_Dblclk)을 찾아 포커스
+    ///   2. 메시지 목록 영역(EVA_VH_ListControl_Dblclk)을 마우스 클릭하여 포커스
     ///   3. Ctrl+A (전체 선택) → Ctrl+C (복사)
     ///   4. 클립보드에서 텍스트 읽기
-    ///   5. Escape로 선택 해제
+    ///
+    /// ※ Escape 키는 절대 보내지 않음 (카카오톡에서 ESC = 창 닫기)
     /// </summary>
     private string? CaptureMessagesViaClipboard(IntPtr chatRoomHandle)
     {
         try
         {
-            // 기존 클립보드 내용을 백업 (옵션)
+            // 기존 클립보드 내용 백업
             string? previousClipboard = GetClipboardText();
 
             // 1. 창 활성화
             ForceActivateWindow(chatRoomHandle);
-            Thread.Sleep(300);
+            Thread.Sleep(400);
 
-            // 2. 메시지 목록 영역에 포커스
+            // 2. 메시지 목록 영역을 마우스 클릭하여 포커스
             var messageListHandle = FindMessageListControl(chatRoomHandle);
             if (messageListHandle != IntPtr.Zero)
             {
-                SetForegroundWindow(chatRoomHandle);
-                Thread.Sleep(100);
-
-                // 메시지 목록 영역 클릭 (포커스를 주기 위해)
-                Win32Api.SendMessage(messageListHandle, 0x0007, IntPtr.Zero, IntPtr.Zero); // WM_SETFOCUS
-                Thread.Sleep(200);
+                ClickOnControl(messageListHandle);
+                Thread.Sleep(300);
+            }
+            else
+            {
+                _logger.LogWarning("메시지 목록 컨트롤을 찾지 못했습니다.");
+                // 채팅방 창의 중앙 상단 영역을 클릭 (메시지 목록은 보통 위쪽에 위치)
+                ClickOnWindowCenter(chatRoomHandle, yOffsetRatio: 0.3);
+                Thread.Sleep(300);
             }
 
             // 3. Ctrl+A (전체 선택)
             keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
-            Thread.Sleep(30);
+            Thread.Sleep(50);
             keybd_event(VK_A, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
-            Thread.Sleep(30);
+            Thread.Sleep(50);
             keybd_event(VK_A, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-            Thread.Sleep(30);
+            Thread.Sleep(50);
             keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-            Thread.Sleep(300);
+            Thread.Sleep(500); // 선택 완료 대기 (충분히)
 
             // 4. Ctrl+C (복사)
             keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
-            Thread.Sleep(30);
+            Thread.Sleep(50);
             keybd_event(VK_C, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
-            Thread.Sleep(30);
+            Thread.Sleep(50);
             keybd_event(VK_C, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-            Thread.Sleep(30);
+            Thread.Sleep(50);
             keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-            Thread.Sleep(300);
+            Thread.Sleep(500); // 복사 완료 대기
 
             // 5. 클립보드에서 텍스트 읽기
             var clipText = GetClipboardText();
 
-            // 6. Escape로 선택 해제
-            keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYDOWN, UIntPtr.Zero);
-            Thread.Sleep(30);
-            keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            // 6. 메시지 목록 아무 곳이나 한번 더 클릭 (선택 해제 - ESC 대신)
+            if (messageListHandle != IntPtr.Zero)
+            {
+                ClickOnControl(messageListHandle);
+            }
 
-            // 클립보드 내용이 이전과 같으면 (복사 실패) null 반환
-            if (clipText == previousClipboard || string.IsNullOrWhiteSpace(clipText))
+            // 클립보드 내용 확인
+            if (string.IsNullOrWhiteSpace(clipText))
+            {
+                _logger.LogDebug("클립보드가 비어있음 - 복사 실패");
+                return null;
+            }
+
+            if (clipText == previousClipboard)
             {
                 _logger.LogDebug("클립보드 내용 변화 없음 - 복사 실패");
                 return null;
             }
 
-            _logger.LogDebug("클립보드에서 {Length}자 읽기 성공", clipText?.Length ?? 0);
+            _logger.LogDebug("클립보드에서 {Length}자 읽기 성공", clipText.Length);
             return clipText;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "클립보드 기반 메시지 캡처 실패");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Win32 컨트롤의 중앙을 마우스 클릭합니다.
+    /// </summary>
+    private void ClickOnControl(IntPtr controlHandle)
+    {
+        if (GetWindowRect(controlHandle, out RECT rect))
+        {
+            // 마우스 위치 백업
+            GetCursorPos(out POINT savedPos);
+
+            // 컨트롤 중앙 좌표
+            int centerX = (rect.Left + rect.Right) / 2;
+            int centerY = (rect.Top + rect.Bottom) / 2;
+
+            // 마우스 이동 → 클릭
+            SetCursorPos(centerX, centerY);
+            Thread.Sleep(50);
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+            Thread.Sleep(30);
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+            Thread.Sleep(50);
+
+            // 마우스 위치 복원
+            SetCursorPos(savedPos.X, savedPos.Y);
+
+            _logger.LogDebug("컨트롤 클릭 - 좌표: ({X}, {Y})", centerX, centerY);
+        }
+        else
+        {
+            _logger.LogDebug("컨트롤 좌표를 가져올 수 없습니다: 0x{Handle:X}", controlHandle);
+        }
+    }
+
+    /// <summary>
+    /// 창의 특정 비율 위치를 마우스 클릭합니다.
+    /// </summary>
+    private void ClickOnWindowCenter(IntPtr windowHandle, double yOffsetRatio = 0.5)
+    {
+        if (GetWindowRect(windowHandle, out RECT rect))
+        {
+            GetCursorPos(out POINT savedPos);
+
+            int centerX = (rect.Left + rect.Right) / 2;
+            int targetY = rect.Top + (int)((rect.Bottom - rect.Top) * yOffsetRatio);
+
+            SetCursorPos(centerX, targetY);
+            Thread.Sleep(50);
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+            Thread.Sleep(30);
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+            Thread.Sleep(50);
+
+            SetCursorPos(savedPos.X, savedPos.Y);
         }
     }
 
