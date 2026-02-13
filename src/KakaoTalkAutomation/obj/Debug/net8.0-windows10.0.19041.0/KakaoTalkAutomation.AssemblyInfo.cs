@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("KakaoTalkAutomation")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+424063ff9aa2f6d41a2a0a1401dfb73cc868aaa1")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e49993a42aa55dea7c5bd45d3e1af1de54afea4f")]
 [assembly: System.Reflection.AssemblyProductAttribute("KakaoTalkAutomation")]
 [assembly: System.Reflection.AssemblyTitleAttribute("KakaoTalkAutomation")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
