@@ -74,30 +74,6 @@ dotnet run --project src/KakaoTalkAutomation
 - 최근 메시지, 채팅방별 메시지, 키워드 검색을 지원합니다
 - DB 파일은 실행 파일 위치에 `kakaotalk_messages.db`로 저장됩니다
 
-## 프로젝트 구조
-
-```
-src/KakaoTalkAutomation/
-├── Program.cs                    # 진입점 및 CLI 메뉴
-├── appsettings.json              # 설정 파일
-├── Core/
-│   ├── KakaoTalkFinder.cs        # 카카오톡 창 탐색 (Win32 API)
-│   ├── MessageReader.cs          # 메시지 읽기 (FlaUI)
-│   └── MessageSender.cs          # 메시지 보내기
-├── Data/
-│   ├── AppDbContext.cs            # EF Core 데이터베이스 컨텍스트
-│   ├── Models/
-│   │   └── ChatMessage.cs         # 메시지 엔티티
-│   └── Repositories/
-│       └── MessageRepository.cs   # 메시지 CRUD
-├── Services/
-│   ├── MessageMonitorService.cs   # 백그라운드 수신 모니터링
-│   └── MessageService.cs          # 비즈니스 로직
-└── Helpers/
-    ├── Win32Api.cs                # Win32 API P/Invoke 선언
-    └── ConsoleHelper.cs           # 콘솔 유틸리티
-```
-
 ## 동작 원리
 
 이 프로그램은 카카오톡 PC의 **공식 API가 아닌**, Windows UI 자동화를 사용합니다:
@@ -106,22 +82,6 @@ src/KakaoTalkAutomation/
 2. **FlaUI** (UI Automation 3)로 채팅방의 메시지 목록 요소를 읽어옵니다
 3. 새 메시지는 **SQLite** 데이터베이스에 자동 저장됩니다
 4. 메시지 전송 시 채팅방의 입력 필드에 텍스트를 설정하고 Enter 키를 전송합니다
-
-## 주의사항
-
-> ⚠️ **카카오톡 업데이트 시** UI 구조가 변경되면 자동화 코드 수정이 필요할 수 있습니다.
-
-> ⚠️ **채팅방은 반드시 팝업(별도 창)으로** 열어야 합니다. 메인 창 내부의 채팅은 탐지되지 않을 수 있습니다.
-
-> ⚠️ **개인 용도로만** 사용해주세요. 카카오톡 이용약관을 준수해야 합니다.
-
-## UI 요소 확인 방법
-
-카카오톡 버전에 따라 UI 요소가 다를 수 있습니다. Windows SDK의 **Inspect.exe** 도구를 사용하여 UI 구조를 확인할 수 있습니다:
-
-1. Windows SDK 설치 후 `Inspect.exe` 실행
-2. 카카오톡 채팅방 위에 마우스를 올려 클래스명, 컨트롤 타입 등을 확인
-3. 필요 시 `KakaoTalkFinder.cs`의 클래스명 배열을 수정
 
 ## 로그
 
