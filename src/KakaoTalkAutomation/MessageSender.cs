@@ -60,6 +60,28 @@ public static class MessageSender
         }
     }
 
+    public static bool TestOpenSearch()
+    {
+        try
+        {
+            var mainWindow = ChatFinder.FindMainWindow();
+            if (mainWindow == IntPtr.Zero) return false;
+
+            Win32.ShowWindow(mainWindow, 9); // SW_RESTORE
+            Win32.SetForegroundWindow(mainWindow);
+            Thread.Sleep(WindowReadyDelayMs);
+
+            Win32.PressKeys(0x11, 0x46); // Ctrl+F
+            Thread.Sleep(SearchReadyDelayMs);
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static void PasteText(string text)
     {
         Win32.RunOnStaThread(() => Clipboard.SetText(text, TextDataFormat.UnicodeText));

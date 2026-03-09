@@ -5,9 +5,14 @@ namespace KakaoTalkAutomation;
 
 public static class PostgresClient
 {
+    public static NpgsqlConnection CreateConnection(PostgresSettings settings)
+    {
+        return new NpgsqlConnection(BuildConnectionString(settings));
+    }
+
     public static async Task TestConnectionAsync(PostgresSettings settings, CancellationToken cancellationToken = default)
     {
-        await using var connection = new NpgsqlConnection(BuildConnectionString(settings));
+        await using var connection = CreateConnection(settings);
         await connection.OpenAsync(cancellationToken);
         await connection.CloseAsync();
     }
@@ -17,7 +22,7 @@ public static class PostgresClient
         string sql,
         CancellationToken cancellationToken = default)
     {
-        await using var connection = new NpgsqlConnection(BuildConnectionString(settings));
+        await using var connection = CreateConnection(settings);
         await connection.OpenAsync(cancellationToken);
 
         await using var command = new NpgsqlCommand(sql, connection);

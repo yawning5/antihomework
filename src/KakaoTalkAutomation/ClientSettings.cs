@@ -3,7 +3,8 @@ namespace KakaoTalkAutomation;
 public sealed class ClientSettings
 {
     public PostgresSettings Postgres { get; set; } = new();
-    public string DefaultQuery { get; set; } = "select now() as server_time;";
+    public int PollIntervalMs { get; set; } = 1000;
+    public int PostSendDelayMs { get; set; } = 300;
 }
 
 public sealed class PostgresSettings

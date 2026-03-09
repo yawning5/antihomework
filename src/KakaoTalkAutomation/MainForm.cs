@@ -1,5 +1,3 @@
-using System.Data;
-
 namespace KakaoTalkAutomation;
 
 public sealed class MainForm : Form
@@ -11,14 +9,16 @@ public sealed class MainForm : Form
     private readonly TextBox _passwordTextBox = new() { UseSystemPasswordChar = true };
     private readonly TextBox _searchPathTextBox = new();
     private readonly CheckBox _sslCheckBox = new() { Text = "SSL Require" };
-    private readonly TextBox _queryTextBox = new()
+    private readonly NumericUpDown _pollIntervalInput = new() { Minimum = 500, Maximum = 60000, Increment = 100, Value = 1000 };
+    private readonly NumericUpDown _postSendDelayInput = new() { Minimum = 0, Maximum = 10000, Increment = 100, Value = 300 };
+    private readonly TextBox _manualRoomNameTextBox = new();
+    private readonly TextBox _manualMessageTextBox = new()
     {
         Multiline = true,
-        ScrollBars = ScrollBars.Both,
-        AcceptsTab = true,
-        Height = 90
+        ScrollBars = ScrollBars.Vertical,
+        Height = 70
     };
-    private readonly DataGridView _resultGrid = new()
+    private readonly DataGridView _previewGrid = new()
     {
         Dock = DockStyle.Fill,
         ReadOnly = true,
@@ -26,22 +26,30 @@ public sealed class MainForm : Form
         AllowUserToDeleteRows = false,
         AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.DisplayedCells
     };
-    private readonly TextBox _roomNameTextBox = new();
-    private readonly TextBox _messageTextBox = new()
-    {
-        Multiline = true,
-        ScrollBars = ScrollBars.Vertical,
-        Height = 90
-    };
+    private readonly Label _workerStateLabel = new() { AutoSize = true };
+    private readonly Label _lastMessageLabel = new() { AutoSize = true };
+    private readonly Label _successCountLabel = new() { AutoSize = true };
+    private readonly Label _failureCountLabel = new() { AutoSize = true };
     private readonly Label _statusLabel = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
 
+    private readonly System.Windows.Forms.Timer _pollTimer = new();
+    private readonly ChatOutRepository _repository = new();
+    private readonly MessageDispatchService _dispatchService = new(new ChatOutRepository(), new SequenceCompletedConfirmationPolicy());
+
     private ClientSettings _settings = new();
+    private CancellationTokenSource? _workerCts;
+    private int _dispatchInProgress;
+    private bool _workerRunning;
+    private int _successCount;
+    private int _failureCount;
 
     public MainForm()
     {
         Text = "KakaoTalk Automation Client";
-        MinimumSize = new Size(1100, 760);
+        MinimumSize = new Size(1200, 760);
         StartPosition = FormStartPosition.CenterScreen;
+
+        _pollTimer.Tick += async (_, _) => await PollOnceAsync();
 
         BuildLayout();
         LoadSettingsIntoForm();
@@ -53,18 +61,20 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
             Padding = new Padding(12)
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         root.Controls.Add(BuildConnectionGroup(), 0, 0);
-        root.Controls.Add(BuildQueryGroup(), 0, 1);
-        root.Controls.Add(BuildResultGroup(), 0, 2);
-        root.Controls.Add(BuildSendGroup(), 0, 3);
+        root.Controls.Add(BuildWorkerGroup(), 0, 1);
+        root.Controls.Add(BuildManualTestGroup(), 0, 2);
+        root.Controls.Add(BuildPreviewGroup(), 0, 3);
+        root.Controls.Add(_statusLabel, 0, 4);
 
         Controls.Add(root);
     }
@@ -121,69 +131,93 @@ public sealed class MainForm : Form
         return group;
     }
 
-    private Control BuildQueryGroup()
+    private Control BuildWorkerGroup()
     {
         var group = new GroupBox
         {
-            Text = "DB Query",
+            Text = "Dispatch Worker",
             Dock = DockStyle.Top,
             AutoSize = true
         };
 
-        var panel = new TableLayoutPanel
+        var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            RowCount = 2,
-            ColumnCount = 1,
+            ColumnCount = 4,
             AutoSize = true,
             Padding = new Padding(12)
         };
 
-        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (var i = 0; i < 4; i++)
+            layout.ColumnStyles.Add(new ColumnStyle(i % 2 == 0 ? SizeType.AutoSize : SizeType.Percent, 50));
 
-        panel.Controls.Add(_queryTextBox, 0, 0);
+        AddLabeledControl(layout, 0, "Poll Interval (ms)", _pollIntervalInput);
+        AddLabeledControl(layout, 0, "Post Send Delay (ms)", _postSendDelayInput, 2);
 
-        var buttons = new FlowLayoutPanel
+        var buttonPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
             AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight
+            FlowDirection = FlowDirection.LeftToRight,
+            Margin = new Padding(3, 10, 3, 0)
         };
 
-        var runButton = new Button { Text = "Run Query", AutoSize = true };
-        runButton.Click += async (_, _) => await RunQueryAsync();
+        var startButton = new Button { Text = "Start Polling", AutoSize = true };
+        startButton.Click += async (_, _) => await StartWorkerAsync();
 
-        var nowButton = new Button { Text = "Load Now() Query", AutoSize = true };
-        nowButton.Click += (_, _) => _queryTextBox.Text = "select now() as server_time;";
+        var stopButton = new Button { Text = "Stop Polling", AutoSize = true };
+        stopButton.Click += (_, _) => StopWorker("Worker stopped.");
 
-        buttons.Controls.Add(runButton);
-        buttons.Controls.Add(nowButton);
-        panel.Controls.Add(buttons, 0, 1);
+        var refreshButton = new Button { Text = "Refresh Preview", AutoSize = true };
+        refreshButton.Click += async (_, _) => await RefreshPreviewAsync();
 
-        group.Controls.Add(panel);
+        buttonPanel.Controls.Add(startButton);
+        buttonPanel.Controls.Add(stopButton);
+        buttonPanel.Controls.Add(refreshButton);
+
+        layout.Controls.Add(buttonPanel, 0, 1);
+        layout.SetColumnSpan(buttonPanel, 4);
+
+        var statusPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Margin = new Padding(3, 10, 3, 0)
+        };
+
+        statusPanel.Controls.Add(_workerStateLabel);
+        statusPanel.Controls.Add(_lastMessageLabel);
+        statusPanel.Controls.Add(_successCountLabel);
+        statusPanel.Controls.Add(_failureCountLabel);
+
+        layout.Controls.Add(statusPanel, 0, 2);
+        layout.SetColumnSpan(statusPanel, 4);
+
+        group.Controls.Add(layout);
         return group;
     }
 
-    private Control BuildResultGroup()
+    private Control BuildPreviewGroup()
     {
         var group = new GroupBox
         {
-            Text = "Query Result",
+            Text = "chat_out Preview",
             Dock = DockStyle.Fill,
             Padding = new Padding(12)
         };
 
-        group.Controls.Add(_resultGrid);
+        group.Controls.Add(_previewGrid);
         return group;
     }
 
-    private Control BuildSendGroup()
+    private Control BuildManualTestGroup()
     {
         var group = new GroupBox
         {
-            Text = "KakaoTalk Send",
-            Dock = DockStyle.Bottom,
+            Text = "Manual Test",
+            Dock = DockStyle.Top,
             AutoSize = true
         };
 
@@ -200,15 +234,26 @@ public sealed class MainForm : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         layout.Controls.Add(new Label { Text = "Room Name", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
-        layout.Controls.Add(_roomNameTextBox, 1, 0);
+        layout.Controls.Add(_manualRoomNameTextBox, 1, 0);
         layout.Controls.Add(new Label { Text = "Message", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
-        layout.Controls.Add(_messageTextBox, 1, 1);
+        layout.Controls.Add(_manualMessageTextBox, 1, 1);
 
-        var sendButton = new Button { Text = "Send Message", AutoSize = true };
-        sendButton.Click += async (_, _) => await SendMessageAsync();
+        var buttons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight
+        };
 
-        layout.Controls.Add(sendButton, 1, 2);
-        layout.Controls.Add(_statusLabel, 1, 3);
+        var ctrlFButton = new Button { Text = "Test Ctrl+F", AutoSize = true };
+        ctrlFButton.Click += async (_, _) => await TestCtrlFAsync();
+
+        var sendButton = new Button { Text = "Send Manual Message", AutoSize = true };
+        sendButton.Click += async (_, _) => await SendManualMessageAsync();
+
+        buttons.Controls.Add(ctrlFButton);
+        buttons.Controls.Add(sendButton);
+        layout.Controls.Add(buttons, 1, 2);
 
         group.Controls.Add(layout);
         return group;
@@ -241,10 +286,13 @@ public sealed class MainForm : Form
         _passwordTextBox.Text = _settings.Postgres.Password;
         _searchPathTextBox.Text = _settings.Postgres.SearchPath;
         _sslCheckBox.Checked = _settings.Postgres.SslModeRequire;
-        _queryTextBox.Text = string.IsNullOrWhiteSpace(_settings.DefaultQuery)
-            ? "select now() as server_time;"
-            : _settings.DefaultQuery;
+        _pollIntervalInput.Value = _settings.PollIntervalMs is >= 500 and <= 60000 ? _settings.PollIntervalMs : 1000;
+        _postSendDelayInput.Value = _settings.PostSendDelayMs is >= 0 and <= 10000 ? _settings.PostSendDelayMs : 300;
 
+        _workerStateLabel.Text = "Worker State: Stopped";
+        _lastMessageLabel.Text = "Last Message: -";
+        _successCountLabel.Text = "Success Count: 0";
+        _failureCountLabel.Text = "Failure Count: 0";
         SetStatus($"Settings loaded from {SettingsStore.SettingsPath}");
     }
 
@@ -262,7 +310,8 @@ public sealed class MainForm : Form
                 SearchPath = _searchPathTextBox.Text.Trim(),
                 SslModeRequire = _sslCheckBox.Checked
             },
-            DefaultQuery = _queryTextBox.Text
+            PollIntervalMs = (int)_pollIntervalInput.Value,
+            PostSendDelayMs = (int)_postSendDelayInput.Value
         };
     }
 
@@ -288,49 +337,159 @@ public sealed class MainForm : Form
         }
     }
 
-    private async Task RunQueryAsync()
+    private async Task StartWorkerAsync()
     {
         try
         {
             _settings = ReadSettingsFromForm();
-            if (string.IsNullOrWhiteSpace(_queryTextBox.Text))
-            {
-                SetStatus("Query is empty.");
-                return;
-            }
+            await PostgresClient.TestConnectionAsync(_settings.Postgres);
 
-            SetStatus("Running query...");
-            var table = await PostgresClient.ExecuteQueryAsync(_settings.Postgres, _queryTextBox.Text);
-            _resultGrid.DataSource = table;
-            SetStatus($"Query completed. {table.Rows.Count} row(s) loaded.");
+            SaveSettings();
+            _workerCts?.Cancel();
+            _workerCts = new CancellationTokenSource();
+            _workerRunning = true;
+            _pollTimer.Interval = Math.Max(500, _settings.PollIntervalMs);
+            _workerStateLabel.Text = "Worker State: Running";
+            SetStatus("Worker started.");
+            await RefreshPreviewAsync();
+            _pollTimer.Start();
+            await PollOnceAsync();
         }
         catch (Exception ex)
         {
-            _resultGrid.DataSource = null;
-            SetStatus($"Query failed: {ex.Message}");
+            _workerRunning = false;
+            _pollTimer.Stop();
+            _workerStateLabel.Text = "Worker State: Stopped";
+            SetStatus($"Worker start failed: {ex.Message}");
         }
     }
 
-    private async Task SendMessageAsync()
+    private void StopWorker(string reason)
     {
-        var roomName = _roomNameTextBox.Text.Trim();
-        var message = _messageTextBox.Text;
+        _pollTimer.Stop();
+        _workerRunning = false;
+        _workerCts?.Cancel();
+        _workerCts = null;
+        _workerStateLabel.Text = "Worker State: Stopped";
+        SetStatus(reason);
+    }
+
+    private async Task PollOnceAsync()
+    {
+        if (!_workerRunning)
+            return;
+
+        if (Interlocked.Exchange(ref _dispatchInProgress, 1) == 1)
+            return;
+
+        try
+        {
+            var settings = ReadSettingsFromForm();
+            var result = await _dispatchService.DispatchNextAsync(
+                settings.Postgres,
+                settings.PostSendDelayMs,
+                _workerCts?.Token ?? CancellationToken.None);
+
+            switch (result.Outcome)
+            {
+                case DispatchOutcome.NoWork:
+                    SetStatus("No pending message.");
+                    break;
+                case DispatchOutcome.SentAndDeleted:
+                    _successCount++;
+                    _successCountLabel.Text = $"Success Count: {_successCount}";
+                    _lastMessageLabel.Text = FormatLastMessage(result.Message);
+                    SetStatus(result.Detail);
+                    break;
+                case DispatchOutcome.SendFailed:
+                    _failureCount++;
+                    _failureCountLabel.Text = $"Failure Count: {_failureCount}";
+                    _lastMessageLabel.Text = FormatLastMessage(result.Message);
+                    StopWorker(result.Detail);
+                    break;
+                case DispatchOutcome.DeleteFailed:
+                    _failureCount++;
+                    _failureCountLabel.Text = $"Failure Count: {_failureCount}";
+                    _lastMessageLabel.Text = FormatLastMessage(result.Message);
+                    StopWorker(result.Detail);
+                    break;
+            }
+
+            await RefreshPreviewAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            SetStatus("Worker cancelled.");
+        }
+        catch (Exception ex)
+        {
+            _failureCount++;
+            _failureCountLabel.Text = $"Failure Count: {_failureCount}";
+            StopWorker($"Worker error: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _dispatchInProgress, 0);
+        }
+    }
+
+    private async Task RefreshPreviewAsync()
+    {
+        try
+        {
+            var settings = ReadSettingsFromForm();
+            var table = await _repository.GetPreviewAsync(settings.Postgres, 20);
+            _previewGrid.DataSource = table;
+        }
+        catch (Exception ex)
+        {
+            _previewGrid.DataSource = null;
+            SetStatus($"Preview refresh failed: {ex.Message}");
+        }
+    }
+
+    private async Task TestCtrlFAsync()
+    {
+        SetStatus("Running Ctrl+F test...");
+        var ok = await Task.Run(MessageSender.TestOpenSearch);
+        SetStatus(ok
+            ? "Ctrl+F test completed. Verify KakaoTalk search UI visually."
+            : "Ctrl+F test failed. Check KakaoTalk main window state.");
+    }
+
+    private async Task SendManualMessageAsync()
+    {
+        var roomName = _manualRoomNameTextBox.Text.Trim();
+        var message = _manualMessageTextBox.Text;
 
         if (string.IsNullOrWhiteSpace(roomName) || string.IsNullOrWhiteSpace(message))
         {
-            SetStatus("Room name and message are required.");
+            SetStatus("Manual test requires room name and message.");
             return;
         }
 
-        SetStatus("Sending message to KakaoTalk...");
+        SetStatus("Running manual send test...");
         var ok = await Task.Run(() => MessageSender.Send(roomName, message));
         SetStatus(ok
-            ? "Message sent."
-            : "Send failed. Check KakaoTalk main window state and popup settings.");
+            ? "Manual send test completed."
+            : "Manual send test failed.");
+    }
+
+    private static string FormatLastMessage(ChatOutMessage? message)
+    {
+        return message is null
+            ? "Last Message: -"
+            : $"Last Message: msg_id={message.MsgId}, room={message.RoomName}";
     }
 
     private void SetStatus(string message)
     {
         _statusLabel.Text = $"{DateTime.Now:HH:mm:ss}  {message}";
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        StopWorker("Application closing.");
+        base.OnFormClosing(e);
     }
 }

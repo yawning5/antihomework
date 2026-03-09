@@ -1,13 +1,16 @@
 # KakaoTalk Automation Client
 
-Windows Forms 기반 클라이언트에서 PostgreSQL 연결 설정을 저장하고, 기본 조회를 실행하고, 카카오톡 메시지 전송까지 수행하는 도구입니다.
+Windows Forms 기반 클라이언트에서 PostgreSQL 연결 설정을 저장하고, `chat_out` 테이블을 1초 주기로 폴링해 카카오톡 메시지를 순차 발송하는 도구입니다.
 
 ## 현재 기능
 
 - PostgreSQL 연결 정보 입력 및 저장
 - PostgreSQL 연결 테스트
-- SQL 직접 실행과 결과 그리드 확인
-- 카카오톡 채팅방 이름 + 메시지 수동 전송
+- `chat_out` 대기열 미리보기
+- 1건 단위 순차 폴링/발송
+- 발송 성공 시 `msg_id` 기준 즉시 삭제
+- `Ctrl+F` 단독 테스트
+- 수동 단건 메시지 전송 테스트
 
 ## 기술 스택
 
@@ -15,7 +18,7 @@ Windows Forms 기반 클라이언트에서 PostgreSQL 연결 설정을 저장하
 |------|------|
 | UI | Windows Forms |
 | 런타임 | .NET 8 (`net8.0-windows`) |
-| DB 드라이버 | Npgsql |
+| DB 드라이버 | Npgsql (PostgreSQL) |
 | 카카오톡 제어 | Win32 P/Invoke |
 | 설정 저장 | JSON 파일 (`client-settings.json`) |
 
@@ -48,7 +51,8 @@ dotnet run --project src/KakaoTalkAutomation
 - Password
 - Search Path
 - SSL Require 여부
-- 기본 SQL
+- Poll Interval (ms)
+- Post Send Delay (ms)
 
 ## 화면 구성
 
@@ -56,15 +60,18 @@ dotnet run --project src/KakaoTalkAutomation
   - 연결 정보 입력
   - `Save Settings`
   - `Test Connection`
-- `DB Query`
-  - SQL 입력
-  - `Run Query`
-- `Query Result`
-  - 조회 결과 표시
-- `KakaoTalk Send`
-  - 채팅방 이름 입력
-  - 메시지 입력
-  - `Send Message`
+- `Dispatch Worker`
+  - 폴링 주기 설정
+  - 메시지 간 지연 설정
+  - `Start Polling`
+  - `Stop Polling`
+  - 상태/성공/실패 건수 표시
+- `Manual Test`
+  - `Test Ctrl+F`
+  - `Send Manual Message`
+  - 워커와 무관한 수동 진단용 입력
+- `chat_out Preview`
+  - 현재 대기열 상위 메시지 표시
 
 ## 프로젝트 구조
 
@@ -83,9 +90,14 @@ src/KakaoTalkAutomation/
 
 ## 제한 사항
 
-- 현재 DB 조회는 사용자가 직접 입력한 SQL을 실행하는 기본 도구 수준입니다.
-- 카카오톡 전송은 여전히 키보드 포커스 흐름에 의존합니다.
+- 카카오톡 전송은 키보드 포커스 흐름에 의존합니다.
 - `client-settings.json`에는 비밀번호가 평문으로 저장됩니다.
+- 발송 성공 기준은 현재 MVP 수준에서 `전송 시퀀스 완료`입니다.
+- 전송 성공 후 삭제 실패 시 중복 발송 위험이 있으므로 워커를 중지합니다.
+
+## 현재 기준 버전
+
+- 현재 문서 기준 산출물 버전: `output_v10`
 
 ## 라이선스
 
