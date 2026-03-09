@@ -6,9 +6,10 @@
 2. `MessageDispatchService.cs`
 3. `ChatOutRepository.cs`
 4. `SettingsStore.cs`
-5. `PostgresClient.cs`
-6. `MessageSender.cs`
-7. `Win32.cs`
+5. `DispatchLogStore.cs`
+6. `PostgresClient.cs`
+7. `MessageSender.cs`
+8. `Win32.cs`
 
 ## 1. 왜 WinForms 클라이언트로 바꿨나
 
@@ -44,7 +45,8 @@
 4. 카카오톡 전송 수행
 5. 성공 판정 모듈 호출
 6. 성공이면 즉시 delete
-7. 실패면 워커 중지
+7. `dispatch-log.jsonl`에 시간 로그 append
+8. 실패면 워커 중지
 
 이렇게 하면 Spring Scheduler처럼 “이전 작업이 끝나기 전에는 다시 안 돈다”는 모델을 단순하게 구현할 수 있습니다.
 
@@ -60,6 +62,14 @@
 단점:
 
 - 비밀번호가 평문 저장됨
+
+`DispatchLogStore.cs`는 `dispatch-log.jsonl`에 건별 발송 시간을 저장합니다.
+
+기록 기준:
+
+- 시작: DB에서 해당 메시지를 폴링한 시점
+- 종료: 카카오톡 전송 시퀀스 완료 시점
+- 차이: `duration_ms`, `duration_sec`
 
 ## 5. 카카오톡 자동화 구조
 

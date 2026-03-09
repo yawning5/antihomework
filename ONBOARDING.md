@@ -33,6 +33,8 @@ src/KakaoTalkAutomation/
   - 설정 모델
 - `SettingsStore.cs`
   - `client-settings.json` 읽기/쓰기
+- `DispatchLogStore.cs`
+  - `dispatch-log.jsonl` append 저장
 - `PostgresClient.cs`
   - Npgsql 기반 PostgreSQL 연결과 조회 실행
 - `ChatOutRepository.cs`
@@ -59,7 +61,10 @@ src/KakaoTalkAutomation/
 3. `Test Connection`으로 연결 확인
 4. `Start Polling`으로 워커 시작
 5. 워커가 `chat_out`에서 `msg_id ASC LIMIT 1`로 1건 조회
-6. 발송 성공 시 해당 `msg_id`를 즉시 삭제
+6. 폴링 시각 기록
+7. 발송 시퀀스 완료 시각 기록
+8. 성공 시 해당 `msg_id`를 즉시 삭제
+9. 건별 로그를 `dispatch-log.jsonl`에 append
 
 ### 카카오톡 쪽
 
@@ -77,6 +82,8 @@ src/KakaoTalkAutomation/
 ## 4. 설정 파일
 
 설정은 실행 폴더의 `client-settings.json`에 저장됩니다.
+
+발송 시간 로그는 실행 폴더의 `dispatch-log.jsonl`에 별도 저장됩니다.
 
 주의:
 

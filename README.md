@@ -21,6 +21,7 @@ Windows Forms 기반 클라이언트에서 PostgreSQL 연결 설정을 저장하
 | DB 드라이버 | Npgsql (PostgreSQL) |
 | 카카오톡 제어 | Win32 P/Invoke |
 | 설정 저장 | JSON 파일 (`client-settings.json`) |
+| 발송 로그 | JSONL 파일 (`dispatch-log.jsonl`) |
 
 ## 실행 전제
 
@@ -53,6 +54,21 @@ dotnet run --project src/KakaoTalkAutomation
 - SSL Require 여부
 - Poll Interval (ms)
 - Post Send Delay (ms)
+
+## 발송 로그 파일
+
+발송 로그는 설정 파일과 분리된 `dispatch-log.jsonl`에 append 방식으로 저장됩니다.
+
+건별 기록 항목:
+
+- `msg_id`
+- `room_name`
+- `polled_at`
+- `sequence_completed_at`
+- `duration_ms`
+- `duration_sec`
+- `result`
+- `detail`
 
 ## 화면 구성
 
@@ -94,6 +110,7 @@ src/KakaoTalkAutomation/
 - `client-settings.json`에는 비밀번호가 평문으로 저장됩니다.
 - 발송 성공 기준은 현재 MVP 수준에서 `전송 시퀀스 완료`입니다.
 - 전송 성공 후 삭제 실패 시 중복 발송 위험이 있으므로 워커를 중지합니다.
+- 발송 시간 로그는 `dispatch-log.jsonl`에 누적 저장됩니다.
 
 ## 현재 기준 버전
 

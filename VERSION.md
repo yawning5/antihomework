@@ -91,3 +91,12 @@
   - `output_v10/`
 - 비고:
   - `Ctrl+F` 단독 테스트와 수동 단건 메시지 전송 테스트 UI 포함
+
+## output_v11
+
+- 날짜: 2026-03-09
+- 목적: 건별 발송 소요시간 JSONL 로그 추가
+- 산출물:
+  - `output_v11/`
+- 비고:
+  - `dispatch-log.jsonl`에 `polled_at`, `sequence_completed_at`, `duration_ms`, `duration_sec` 기록
