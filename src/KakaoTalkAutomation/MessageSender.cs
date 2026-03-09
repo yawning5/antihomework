@@ -4,64 +4,65 @@ namespace KakaoTalkAutomation;
 /// 카카오톡 메시지 보내기
 ///
 /// 동작 흐름:
-///   1. 채팅방 창을 앞으로 가져온다
-///   2. 입력 필드(Edit 컨트롤)를 찾아 포커스를 준다
-///   3. 클립보드에 텍스트를 넣는다
-///   4. Ctrl+V (붙여넣기) → Enter (전송)
+///   1. 카카오톡 메인 창을 앞으로 가져온다
+///   2. Ctrl+F로 채팅방 검색창을 연다
+///   3. 채팅방 이름을 붙여넣고 Enter로 채팅방을 연다
+///   4. 메시지를 붙여넣고 Enter로 전송한다
+///   5. Ctrl+W와 ESC로 채팅창을 닫고 검색 상태를 정리한다
 ///
-/// ※ 카카오톡의 입력 필드가 RichEdit 컨트롤이라
-///    WM_SETTEXT가 안 먹혀서, 클립보드+Ctrl+V 조합이 가장 안정적입니다.
+/// ※ 이 방식은 카카오톡의 키보드 포커스 흐름에 의존합니다.
+///    사용자가 다른 창을 클릭하거나 포커스를 뺏으면 즉시 실패할 수 있습니다.
 /// </summary>
 public static class MessageSender
 {
+    private const int WindowReadyDelayMs = 500;
+    private const int SearchReadyDelayMs = 250;
+    private const int RoomSearchDelayMs = 1000;
+    private const int PopupOpenDelayMs = 700;
+    private const int PasteDelayMs = 120;
+    private const int KeySequenceDelayMs = 300;
+
     /// <summary>채팅방에 메시지를 보냅니다.</summary>
-    public static bool Send(IntPtr chatRoom, string message)
+    public static bool Send(string roomName, string message)
     {
         try
         {
-            // 1. 창 활성화
-            Win32.ShowWindow(chatRoom, 9); // SW_RESTORE
-            Win32.SetForegroundWindow(chatRoom);
-            Thread.Sleep(500);
+            var mainWindow = ChatFinder.FindMainWindow();
+            if (mainWindow == IntPtr.Zero) return false;
 
-            // 2. 입력 필드 찾기 → 포커스
-            var edit = FindEditControl(chatRoom);
-            if (edit != IntPtr.Zero)
-            {
-                Win32.SendMessage(edit, 0x0007, IntPtr.Zero, IntPtr.Zero); // WM_SETFOCUS
-                Thread.Sleep(200);
-            }
+            Win32.ShowWindow(mainWindow, 9); // SW_RESTORE
+            Win32.SetForegroundWindow(mainWindow);
+            Thread.Sleep(WindowReadyDelayMs);
 
-            // 3. 클립보드에 텍스트 복사
-            Win32.RunOnStaThread(() => Clipboard.SetText(message, TextDataFormat.UnicodeText));
-            Thread.Sleep(100);
+            Win32.PressKeys(0x11, 0x46); // Ctrl+F
+            Thread.Sleep(SearchReadyDelayMs);
 
-            // 4. Ctrl+V → Enter
-            Win32.PressKeys(0x11, 0x56);   // Ctrl+V (붙여넣기)
-            Thread.Sleep(300);
-            Win32.PressKeys(0x0D);          // Enter (전송!)
-            Thread.Sleep(200);
+            PasteText(roomName);
+            Thread.Sleep(RoomSearchDelayMs);
+            Win32.PressKeys(0x0D); // Enter
+            Thread.Sleep(PopupOpenDelayMs);
+
+            PasteText(message);
+            Thread.Sleep(PasteDelayMs);
+            Win32.PressKeys(0x0D); // Enter
+            Thread.Sleep(KeySequenceDelayMs);
+
+            Win32.PressKeys(0x11, 0x57); // Ctrl+W
+            Thread.Sleep(KeySequenceDelayMs);
+            Win32.PressKeys(0x1B); // ESC
+            Thread.Sleep(KeySequenceDelayMs);
 
             return true;
         }
-        catch { return false; }
+        catch
+        {
+            return false;
+        }
     }
 
-    /// <summary>
-    /// 채팅방 안에서 입력 필드(Edit 컨트롤)를 찾습니다.
-    ///
-    /// EnumChildWindows로 자식 컨트롤을 순회하면서
-    /// 클래스명에 "Edit"가 포함된 컨트롤을 찾습니다.
-    /// </summary>
-    private static IntPtr FindEditControl(IntPtr parent)
+    private static void PasteText(string text)
     {
-        IntPtr found = IntPtr.Zero;
-        Win32.EnumChildWindows(parent, (hWnd, _) =>
-        {
-            if (Win32.GetClassName(hWnd).Contains("Edit", StringComparison.OrdinalIgnoreCase))
-                found = hWnd;
-            return true; // 계속 순회 (마지막 Edit = 입력 필드)
-        }, IntPtr.Zero);
-        return found;
+        Win32.RunOnStaThread(() => Clipboard.SetText(text, TextDataFormat.UnicodeText));
+        Win32.PressKeys(0x11, 0x56); // Ctrl+V
     }
 }

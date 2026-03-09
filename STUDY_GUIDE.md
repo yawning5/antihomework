@@ -1,363 +1,233 @@
 # 📖 카카오톡 자동화 학습 가이드
 
-> **대상**: 백엔드(Java/Spring) 개발자가 Windows 데스크톱 프로그램을 처음 다룰 때
+> **대상**: 백엔드(Java/Spring) 개발자가 Windows 데스크톱 자동화를 처음 다룰 때
 >
-> **목표**: Win32 API를 사용하여 카카오톡 PC 창을 제어하는 원리를 이해하기
+> **목표**: 카카오톡 메인 창의 키보드 포커스 흐름을 제어하는 원리를 이해하기
 
 ---
 
-## 1. 핵심 개념: "창 핸들(HWND)"이란?
+## 1. 핵심 개념: 이번 방식은 "포커스 흐름 제어"다
 
-백엔드에서 DB 테이블의 각 행(Row)에 Primary Key가 있듯이,
-**Windows의 모든 UI 요소(창, 버튼, 입력 필드)에는 고유 식별자가 있습니다.**
+예전 방식은 열려 있는 팝업 채팅방을 찾아 그 창에 직접 입력하는 구조였습니다.
+지금 방식은 다릅니다.
 
-이것이 바로 **HWND (Handle to Window)** = 창 핸들 입니다.
+핵심은 아래 한 줄입니다.
 
+**카카오톡 메인 창 하나를 앞으로 가져온 뒤, 사용자가 직접 누를 단축키 흐름을 코드로 재현한다.**
+
+즉, 제어 대상은 개별 채팅방 핸들이 아니라 다음 순서입니다.
+
+```text
+메인 창 활성화
+→ Ctrl+F
+→ 채팅방 이름 붙여넣기
+→ Enter
+→ 메시지 붙여넣기
+→ Enter
+→ Ctrl+W
+→ ESC
 ```
-[웹 서비스]                        [Windows 데스크톱]
-──────────────────────────────    ──────────────────────────────
-HTTP 요청 → URL로 대상 지정       → HWND(창 핸들)로 대상 지정
-DB 조회 → PK로 행 식별            → HWND로 창 식별
-REST API → 엔드포인트 호출        → Win32 API 함수 호출
-```
-
-**핵심 포인트**: 카카오톡 채팅방도 하나의 "창"이고, 그 안의 입력 필드도 하나의 "창"입니다.
-이 핸들만 알면 해당 UI 요소를 프로그래밍으로 제어할 수 있습니다.
 
 ---
 
-## 2. Win32 API 란?
+## 2. 왜 HWND 기반 팝업 탐색을 버리나?
 
-C#에서 Windows 운영체제의 기능을 직접 사용하는 방법입니다.
-Java로 치면 **JNI(Java Native Interface)** 와 비슷한 개념입니다.
+기존 방식은 열려 있는 채팅방 팝업을 먼저 찾아야 했습니다.
+즉, 사용자가 미리 채팅방을 열어둬야 했고, 그 창의 입력 컨트롤도 찾아야 했습니다.
+
+새 방식에서는 사용자가 미리 채팅방을 열어둘 필요가 없습니다.
+대신 카카오톡 메인 창만 띄워두면 프로그램이 검색부터 전송까지 수행합니다.
+
+장점:
+
+- 사용자 준비 절차가 단순해짐
+- 채팅방 핸들 목록을 관리할 필요가 없음
+- 입력 컨트롤 클래스명을 직접 추적할 필요가 줄어듦
+
+단점:
+
+- 키보드 포커스 흐름에 100% 의존
+- 사용자가 중간에 클릭하면 실패
+- 카카오톡 UI나 단축키 동작이 바뀌면 바로 깨질 수 있음
+
+---
+
+## 3. Win32 API는 여기서 어떻게 쓰이나?
+
+C#에서 Windows 운영체제 기능을 직접 호출하기 위해 `DllImport`를 사용합니다.
+이번 구조에서 핵심 Win32 호출은 아주 단순합니다.
 
 ```csharp
-// C#에서 Win32 API를 호출하는 방법 (P/Invoke)
-// → Win32.cs에 모아둠
 [DllImport("user32.dll")]
-public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
+public static extern bool SetForegroundWindow(IntPtr hWnd);
 ```
 
-| 항목 | Java 비유 | C# Win32 |
-|:---|:---|:---|
-| 네이티브 호출 | JNI | P/Invoke (DllImport) |
-| 반환 타입 | long (포인터) | IntPtr (포인터) |
-| DLL 파일 | .so / .dll | user32.dll |
+이번 구현에서 Win32 API의 역할:
 
-**user32.dll** = Windows의 UI 관련 기능이 모여있는 핵심 라이브러리
+- 카카오톡 메인 창을 앞으로 가져오기
+- 키 입력을 시뮬레이션하기
+- 필요하면 창 제목을 읽어 메인 창을 식별하기
+
+즉, 이번 프로젝트의 본질은
+"특정 창 안의 자식 컨트롤을 복잡하게 탐색"하는 것보다
+"메인 창이 올바른 포커스를 갖고 있을 때 키 입력 시퀀스를 안전하게 흘려보내는 것"에 가깝습니다.
 
 ---
 
-## 3. 카카오톡 채팅방 찾기 — `ChatFinder.cs`
+## 4. 카카오톡 메인 창 찾기
 
-### 3-1. 모든 창을 순회하며 카카오톡 찾기
+`ChatFinder.cs`는 먼저 `Process.GetProcessesByName("KakaoTalk")`로 카카오톡 프로세스를 찾습니다.
+그 뒤 `EnumWindows`로 최상위 창을 순회하면서 다음 조건을 만족하는 창을 메인 창으로 봅니다.
 
-Windows에는 수백 개의 창이 떠 있습니다. 이 중 카카오톡 것만 골라야 합니다.
+- 카카오톡 프로세스에 속함
+- 현재 보이는 창임
+- 창 제목이 `"카카오톡"`임
 
-```
-[전체 창 목록]
-├── Chrome (Class: Chrome_WidgetWin_1)
-├── 메모장 (Class: Notepad)
-├── 카카오톡 메인 (Class: EVA_Window_Dblclk, Title: "카카오톡")     ← 건너뜀
-├── 채팅방 "홍길동" (Class: EVA_Window_Dblclk, Title: "홍길동")     ← 이것!
-├── 채팅방 "팀채팅" (Class: EVA_Window_Dblclk, Title: "팀채팅")     ← 이것!
-└── ...
-```
+이 전제가 중요한 이유는, 메인 창이 실제로 화면에 떠 있지 않으면 이후 키 입력 시퀀스가 전부 틀어지기 때문입니다.
 
-### 3-2. 실제 코드 (ChatFinder.Find)
+---
+
+## 5. 메시지 전송 흐름
+
+현재 전송 로직은 `ChatFinder.FindMainWindow()`와 `MessageSender.Send(roomName, message)`로 나뉘어 있습니다.
+
+### Step 1. 메인 창 활성화
 
 ```csharp
-public static List<(IntPtr Handle, string Name)> Find()
-{
-    var rooms = new List<(IntPtr, string)>();
-
-    // 1. 카카오톡 프로세스 ID 가져오기
-    var pids = Process.GetProcessesByName("KakaoTalk")
-                      .Select(p => (uint)p.Id)
-                      .ToHashSet();
-    if (pids.Count == 0) return rooms;
-
-    // 2. 모든 창을 돌면서 카카오톡 + 보이는 창만 필터링
-    Win32.EnumWindows((hWnd, _) =>
-    {
-        Win32.GetWindowThreadProcessId(hWnd, out uint pid);
-
-        if (pids.Contains(pid) && Win32.IsWindowVisible(hWnd))
-        {
-            string title = Win32.GetTitle(hWnd);
-
-            // "카카오톡" = 메인 창 → 건너뜀  /  빈 제목 → 건너뜀
-            if (!string.IsNullOrEmpty(title) && title != "카카오톡")
-                rooms.Add((hWnd, title));
-        }
-        return true; // 계속 순회
-    }, IntPtr.Zero);
-
-    return rooms;
-}
+Win32.ShowWindow(mainWindow, 9);
+Win32.SetForegroundWindow(mainWindow);
+Thread.Sleep(500);
 ```
 
-**백엔드 비유**: DB에서 `SELECT * FROM windows WHERE pid IN (...) AND visible = true AND title != '카카오톡'`
+목적:
 
-> 💡 **포인트**: 메인 창과 채팅방의 차이 = 제목이 `"카카오톡"`인지 아닌지
+- 최소화된 경우 복원
+- 전면 포커스 확보
+- UI 전환 애니메이션 대기
 
----
-
-## 4. 채팅방 안의 입력 필드 찾기
-
-채팅방 창 안에도 여러 "자식 창(Child Window)"이 있습니다:
-
-```
-[채팅방 "홍길동"] (HWND: 0x1234, Class: EVA_Window_Dblclk)
-│
-├── [메시지 목록 영역] (Class: EVA_VH_ListControl_Dblclk)  ← 메시지가 표시되는 곳
-├── [입력 필드]        (Class: RichEdit50W)                  ← 여기에 타이핑!
-├── [전송 버튼]        (Class: EVA_ChildWindow)              ← 전송 버튼
-└── [기타 UI 요소들...]
-```
-
-### 입력 필드를 찾는 방법 (MessageSender.FindEditControl)
+### Step 2. 채팅방 검색창 열기
 
 ```csharp
-private static IntPtr FindEditControl(IntPtr parent)
-{
-    IntPtr found = IntPtr.Zero;
-    Win32.EnumChildWindows(parent, (hWnd, _) =>
-    {
-        if (Win32.GetClassName(hWnd).Contains("Edit", StringComparison.OrdinalIgnoreCase))
-            found = hWnd;
-        return true; // 계속 순회 (마지막 Edit = 입력 필드)
-    }, IntPtr.Zero);
-    return found;
-}
+Win32.PressKeys(0x11, 0x46); // Ctrl+F
+Thread.Sleep(250);
 ```
 
-> ⚠️ `return true`로 끝까지 순회하면서 **마지막** Edit 컨트롤을 저장합니다.
-> 카카오톡에서 입력 필드가 마지막 Edit 자식이기 때문입니다.
+여기서 중요한 것은 "Ctrl+F가 실제로 카카오톡 검색 UI에 먹었는가"입니다.
+다른 창이 활성화된 상태라면 이 시점부터 전부 잘못됩니다.
 
-**백엔드 비유**: 부모-자식 관계 = DB의 Foreign Key 관계
-- 채팅방(부모) → 입력 필드(자식), 메시지 목록(자식), 버튼(자식)
-
----
-
-## 5. 클래스명은 어떻게 알아내나요?
-
-### 방법 1: Spy++ (Visual Studio 도구)
-- Visual Studio → 도구 → Spy++ 실행
-- 망원경 아이콘(🔍)을 카카오톡 창 위에 드래그하면 정보가 표시됨
-- Class, Handle, Title 등을 확인 가능
-
-### 방법 2: 코드로 직접 열거
+### Step 3. 채팅방 이름 붙여넣기
 
 ```csharp
-// 채팅방의 모든 자식 창을 출력
-int index = 0;
-Win32.EnumChildWindows(chatRoomHandle, (hWnd, _) =>
-{
-    var className = Win32.GetClassName(hWnd);
-    var title = Win32.GetTitle(hWnd);
-    Console.WriteLine($"[{index++}] Class={className}, Title={title}, Handle=0x{hWnd:X}");
-    return true;
-}, IntPtr.Zero);
+Clipboard.SetText(roomName, TextDataFormat.UnicodeText);
+Win32.PressKeys(0x11, 0x56); // Ctrl+V
+Win32.PressKeys(0x0D);       // Enter
 ```
 
-출력 예시:
-```
-[0] Class=EVA_ChildWindow, Title=, Handle=0xA1234
-[1] Class=EVA_VH_ListControl_Dblclk, Title=, Handle=0xB5678   ← 메시지 목록
-[2] Class=RichEdit50W, Title=, Handle=0xC9ABC                  ← 입력 필드!
-[3] Class=EVA_ChildWindow, Title=, Handle=0xDDEF0
-```
+의도:
 
-> ⚠️ **주의**: 카카오톡 버전이 업데이트되면 클래스명이 바뀔 수 있습니다!
+- 검색어를 한글 포함 안전하게 입력
+- Enter로 검색 결과의 채팅방 열기
 
----
+이때 전제는 **Enter를 누르면 채팅방이 새 창으로 떠야 한다**는 것입니다.
 
-## 6. 메시지 보내기 — `MessageSender.cs`
-
-### 핵심 흐름
-
-```
-1. 채팅방 창을 복원 + 앞으로 가져온다 (ShowWindow + SetForegroundWindow)
-2. 입력 필드(Edit 컨트롤)를 찾아 포커스를 준다 (WM_SETFOCUS)
-3. 클립보드에 보낼 텍스트를 넣는다 (Clipboard.SetText)
-4. Ctrl+V를 시뮬레이션한다 (PressKeys)  ← 입력 필드에 텍스트 붙여넣기
-5. Enter를 시뮬레이션한다 (PressKeys)    ← 전송!
-```
-
-### 왜 직접 입력하지 않고 클립보드를 쓰나요?
-
-카카오톡의 입력 필드는 `RichEdit` 컨트롤이라 일반 텍스트 입력 방식(`WM_SETTEXT`)이
-작동하지 않습니다. 그래서 "클립보드에 복사 → Ctrl+V 붙여넣기"가 가장 안정적입니다.
-
-### 실제 코드 (MessageSender.Send)
+### Step 4. 메시지 전송
 
 ```csharp
-public static bool Send(IntPtr chatRoom, string message)
-{
-    try
-    {
-        // 1. 창 활성화
-        Win32.ShowWindow(chatRoom, 9); // SW_RESTORE
-        Win32.SetForegroundWindow(chatRoom);
-        Thread.Sleep(500);
-
-        // 2. 입력 필드 찾기 → 포커스
-        var edit = FindEditControl(chatRoom);
-        if (edit != IntPtr.Zero)
-        {
-            Win32.SendMessage(edit, 0x0007, IntPtr.Zero, IntPtr.Zero); // WM_SETFOCUS
-            Thread.Sleep(200);
-        }
-
-        // 3. 클립보드에 텍스트 복사 (STA 스레드 필요)
-        Win32.RunOnStaThread(() => Clipboard.SetText(message, TextDataFormat.UnicodeText));
-        Thread.Sleep(100);
-
-        // 4. Ctrl+V → Enter
-        Win32.PressKeys(0x11, 0x56);   // Ctrl+V (붙여넣기)
-        Thread.Sleep(300);
-        Win32.PressKeys(0x0D);          // Enter (전송!)
-        Thread.Sleep(200);
-
-        return true;
-    }
-    catch { return false; }
-}
+Clipboard.SetText(message, TextDataFormat.UnicodeText);
+Win32.PressKeys(0x11, 0x56); // Ctrl+V
+Win32.PressKeys(0x0D);       // Enter
 ```
 
-> 💡 **STA 스레드**: 클립보드는 COM 기반이라 STA(Single Thread Apartment) 스레드에서만
-> 접근 가능합니다. `Win32.RunOnStaThread()`가 이를 처리합니다.
+이 시점에는 새로 열린 채팅창이 포커스를 가져갔다는 가정이 들어갑니다.
 
----
-
-## 7. 프로그램 진입점 — `Program.cs`
-
-콘솔 기반의 CLI 메뉴 프로그램입니다.
-
-```
-=== 카카오톡 자동화 프로그램 ===
-
-1. 채팅방 목록 보기     → ChatFinder.Find()
-2. 메시지 보내기        → MessageSender.Send()
-0. 종료
-```
-
-- 채팅방 선택은 `SelectChatRoom()` 헬퍼로 공통 처리
-
----
-
-## 8. 프로젝트 구조 한눈에 보기
-
-```
-KakaoTalkAutomation/
-│
-├── Win32.cs           ← Win32 API 함수 모음 (DllImport + 편의 래퍼)
-├── ChatFinder.cs      ← 카카오톡 채팅방 핸들 찾기
-├── MessageSender.cs   ← 메시지 보내기 (클립보드 + Ctrl+V + Enter)
-├── Program.cs         ← 진입점 (CLI 메뉴)
-└── KakaoTalkAutomation.csproj ← 프로젝트 설정
-```
-
-### 파일별 역할과 백엔드 비유
-
-| 파일 | 역할 | Spring Boot 비유 |
-|:---|:---|:---|
-| `Win32.cs` | OS 네이티브 함수 선언 | JNI 래퍼 |
-| `ChatFinder.cs` | 카카오톡 창 탐색 | Repository (조회) |
-| `MessageSender.cs` | 메시지 보내기 | Service (비즈니스 로직) |
-| `Program.cs` | CLI 메뉴 + 메인 루프 | Controller + main() |
-
-### 설계 특징
-
-- **DI 없음**: 모든 핵심 클래스는 `static class`로 작성 → 의존성 주입 불필요
-- **단순한 구조**: 폴더 분리 없이 4개 핵심 파일로 구성 → 진입 장벽 최소화
-
----
-
-## 9. Win32.cs 주요 함수 정리
-
-### 원시 API (DllImport)
-
-| 함수명 | 용도 | 백엔드 비유 |
-|:---|:---|:---|
-| `EnumWindows(callback)` | 모든 최상위 창 순회 | `findAll()` + 스트림 필터링 |
-| `EnumChildWindows(parent, callback)` | 자식 창 순회 | 부모 ID로 자식 조회 |
-| `IsWindowVisible(hwnd)` | 창이 보이는지 확인 | `WHERE visible = true` |
-| `GetWindowThreadProcessId` | 창의 프로세스 ID 확인 | `WHERE pid = ?` |
-| `SetForegroundWindow(hwnd)` | 창을 앞으로 가져오기 | — |
-| `ShowWindow(hwnd, cmd)` | 창 표시/숨기기/복원 | — |
-| `SendMessage(hwnd, msg)` | 창에 윈도우 메시지 전송 | REST API 호출 |
-| `keybd_event(key)` | 키보드 입력 시뮬레이션 | — |
-| `mouse_event(flags)` | 마우스 입력 시뮬레이션 | — |
-| `SetCursorPos(x, y)` | 마우스 위치 이동 | — |
-| `GetCursorPos(out pt)` | 현재 마우스 위치 | — |
-| `GetWindowRect(hwnd, out rect)` | 창 위치/크기 | — |
-
-### 편의 래퍼 메서드
-
-| 메서드 | 용도 |
-|:---|:---|
-| `GetTitle(hwnd)` | 창 제목 가져오기 (GetWindowText 래퍼) |
-| `GetClassName(hwnd)` | 창 클래스명 가져오기 |
-| `PressKeys(params byte[])` | 키 조합 누르기 (누르고 → 떼기 자동화) |
-| `RunOnStaThread(action)` | STA 스레드에서 실행 (클립보드 접근용) |
-
-> 💡 `PressKeys`는 매개변수로 받은 키들을 순서대로 누른 뒤, 역순으로 뗍니다.
-> 예: `PressKeys(0x11, 0x56)` = Ctrl 누르기 → V 누르기 → V 떼기 → Ctrl 떼기
-
----
-
-## 10. 직접 만들어보기 순서 (추천)
-
-처음부터 만들어본다면 이 순서를 추천합니다:
-
-### Step 1: 프로젝트 생성 + Win32 API 선언
+### Step 5. 후처리
 
 ```csharp
-// 콘솔 프로젝트 생성 후, Win32.cs에 DllImport 추가
-[DllImport("user32.dll")] public static extern bool EnumWindows(...);
-[DllImport("user32.dll")] public static extern bool IsWindowVisible(...);
+Win32.PressKeys(0x11, 0x57); // Ctrl+W
+Win32.PressKeys(0x1B);       // ESC
 ```
 
-### Step 2: 채팅방 목록 출력 (ChatFinder)
+의도:
 
-```csharp
-// EnumWindows로 카카오톡 프로세스의 보이는 창을 찾아 이름 출력
-var rooms = ChatFinder.Find();
-rooms.ForEach(r => Console.WriteLine(r.Name));
-```
-
-### Step 3: 메시지 보내기 (MessageSender)
-
-```csharp
-// FindEditControl → WM_SETFOCUS → Clipboard.SetText → PressKeys(Ctrl+V, Enter)
-MessageSender.Send(chatRoomHandle, "안녕하세요!");
-```
-
-### Step 4: CLI 메뉴로 통합 (Program.cs)
-
-```csharp
-// while 루프 + switch로 메뉴 구성
-// 채팅방 선택 → 기능 실행 → 결과 출력
-```
+- 채팅창 닫기
+- 메인 창으로 돌아온 뒤 검색 상태 초기화
 
 ---
 
-## 11. 자주 겪는 문제와 해결법
+## 6. 왜 여전히 클립보드를 쓰나?
 
-### Q: 카카오톡 창을 찾지 못해요
-**A**: 채팅방을 **"팝업 창"으로 열어야** 합니다. 카카오톡 메인 창 안에 있는 채팅은 감지가 안 됩니다.
+키보드 매크로 기반으로 바뀌었어도, 텍스트 입력은 여전히 클립보드 방식이 가장 단순합니다.
 
-### Q: 키보드 시뮬레이션이 작동하지 않아요
-**A**: 프로그램을 **관리자 권한**으로 실행해야 합니다. `keybd_event`, `mouse_event`는 권한이 필요할 수 있습니다.
+이유:
 
-### Q: 클립보드 접근 시 에러가 나요
-**A**: 클립보드는 STA 스레드에서만 접근 가능합니다. `Win32.RunOnStaThread()`를 사용하세요.
+- 한글 입력이 안정적임
+- 키 하나씩 타이핑하는 방식보다 구현이 단순함
+- 카카오톡 입력창 내부 구현에 덜 민감함
 
-### Q: 메시지 전송 시 한글이 깨져요
-**A**: 클립보드 + Ctrl+V 방식을 사용하면 한글 문제가 없습니다. `WM_CHAR`로 직접 입력하면 깨질 수 있습니다.
+그래서 현재 구조는 "텍스트는 클립보드", "흐름 제어는 키보드 단축키" 조합입니다.
 
-### Q: 클래스명이 문서와 다릅니다
-**A**: 카카오톡 버전에 따라 클래스명이 변경될 수 있습니다. `EnumChildWindows`로 직접 확인하세요.
+---
 
+## 7. 가장 큰 리스크: 포커스 경쟁
+
+이번 방식의 핵심 리스크는 포커스 경쟁입니다.
+
+실패 예시:
+
+- 사용자가 중간에 마우스를 클릭
+- 다른 앱 알림창이 튀어나옴
+- 카카오톡이 생각보다 늦게 반응함
+- 채팅방이 새 창이 아니라 메인 창 내부로 열림
+
+즉, 이 프로젝트는 API 호출형 자동화가 아니라 "사람 대신 키를 눌러주는 자동화"에 가깝습니다.
+
+그래서 안정화 포인트는 다음과 같습니다.
+
+- 딜레이 값(`Thread.Sleep`) 튜닝
+- 전송 전 메인 창 상태 보장
+- 카카오톡 설정 검증
+- 실패 시 재시도나 중단 기준 정의
+
+---
+
+## 8. 현재 파일 구조
+
+```text
+src/KakaoTalkAutomation/
+├── Program.cs
+├── ChatFinder.cs
+├── MessageSender.cs
+├── Win32.cs
+└── KakaoTalkAutomation.csproj
+```
+
+파일별 역할:
+
+- `Program.cs`
+  - 콘솔 메뉴
+  - 채팅방 이름/메시지 입력
+- `ChatFinder.cs`
+  - 카카오톡 메인 창 탐색
+- `MessageSender.cs`
+  - 키보드 매크로 시퀀스 실행
+- `Win32.cs`
+  - 포커스 제어와 키 입력 시뮬레이션에 필요한 Win32 래퍼
+
+---
+
+## 9. 자주 겪는 문제와 해결법
+
+### Q: 전송이 아예 시작되지 않아요
+**A**: 카카오톡 메인 창이 실제로 화면에 떠 있는지 먼저 확인하세요. 최소화 상태거나 다른 창 뒤에 있으면 실패할 수 있습니다.
+
+### Q: 검색창이 안 열려요
+**A**: `Ctrl+F` 입력 시점에 카카오톡 메인 창이 포커스를 갖고 있는지 확인하세요. 딜레이를 늘려야 할 수도 있습니다.
+
+### Q: 채팅방은 찾았는데 메시지가 안 보내져요
+**A**: Enter 후 새 창이 뜨는 설정인지 확인하세요. 메인 창 내부 탭으로 열리면 이후 포커스 가정이 깨질 수 있습니다.
+
+### Q: 한글이 깨지거나 일부만 입력돼요
+**A**: 현재 구조는 클립보드 붙여넣기를 사용하므로, 보통은 한글 안정성이 높습니다. 문제 발생 시 클립보드 접근 시점과 대기 시간을 확인하세요.
+
+### Q: 환경에 따라 성공률이 들쭉날쭉해요
+**A**: `Thread.Sleep` 값이 머신 속도나 카카오톡 애니메이션 타이밍과 안 맞을 수 있습니다. 가장 먼저 딜레이 값을 튜닝하세요.
