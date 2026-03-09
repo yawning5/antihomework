@@ -1,0 +1,7 @@
+output_v*/
+
+# Build outputs
+bin/
+obj/
+src/KakaoTalkAutomation/bin/
+src/KakaoTalkAutomation/obj/
