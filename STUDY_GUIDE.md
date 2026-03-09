@@ -231,146 +231,7 @@ public static bool Send(IntPtr chatRoom, string message)
 
 ---
 
-## 7. 메시지 읽기 — `MessageReader.cs`
-
-### 왜 직접 읽을 수 없나요?
-
-카카오톡의 메시지 목록은 `EVA_VH_ListControl_Dblclk`라는 **커스텀 컨트롤**입니다.
-일반적인 ListView나 TextBox가 아니라서, `WM_GETTEXT` 같은 표준 API로 텍스트를
-가져올 수 없습니다.
-
-### 해결책: 클릭 → Ctrl+A → Ctrl+C (포커스 → 전체 선택 → 복사)
-
-카카오톡은 Ctrl+A + Ctrl+C 시 클립보드에 메시지를 다음 형식으로 넣어줍니다:
-
-```
-[홍길동] [오후 3:45] 안녕하세요
-[홍길동] [오후 3:46] 오늘 회의 몇 시예요?
-[김철수] [오후 3:47] 3시입니다
-```
-
-### 실제 코드 흐름 (MessageReader.Read)
-
-```csharp
-public static List<ChatMsg> Read(IntPtr chatRoom)
-{
-    // 1. 창 활성화
-    Win32.ShowWindow(chatRoom, 9);
-    Win32.SetForegroundWindow(chatRoom);
-    Thread.Sleep(300);
-
-    // 2. 메시지 목록 영역 클릭 (포커스를 메시지 영역으로)
-    ClickMessageArea(chatRoom);
-    Thread.Sleep(300);
-
-    // 3. Ctrl+A → Ctrl+C
-    Win32.PressKeys(0x11, 0x41);   // Ctrl+A (전체 선택)
-    Thread.Sleep(300);
-    Win32.PressKeys(0x11, 0x43);   // Ctrl+C (복사)
-    Thread.Sleep(500);
-
-    // 4. 클립보드에서 텍스트 읽기 (STA 스레드)
-    string? text = null;
-    Win32.RunOnStaThread(() => text = Clipboard.GetText());
-
-    // 5. 선택 해제 (다시 클릭)
-    ClickMessageArea(chatRoom);
-
-    // 6. 정규식 파싱
-    return ParseKakaoText(text);
-}
-```
-
-### 메시지 목록 클릭 (ClickMessageArea)
-
-```csharp
-private static void ClickMessageArea(IntPtr chatRoom)
-{
-    // EVA_VH_ListControl 클래스의 자식 컨트롤을 찾아서
-    IntPtr listCtrl = IntPtr.Zero;
-    Win32.EnumChildWindows(chatRoom, (hWnd, _) =>
-    {
-        if (Win32.GetClassName(hWnd).Contains("EVA_VH_ListControl"))
-        { listCtrl = hWnd; return false; } // 찾으면 중단
-        return true;
-    }, IntPtr.Zero);
-
-    // 해당 영역의 중앙을 마우스 클릭 (위치 저장 → 클릭 → 원래 위치 복원)
-    var target = listCtrl != IntPtr.Zero ? listCtrl : chatRoom;
-    Win32.GetWindowRect(target, out var r);
-    Win32.GetCursorPos(out var saved);
-    Win32.SetCursorPos((r.Left + r.Right) / 2, (r.Top + r.Bottom) / 2);
-    Win32.mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero); // 왼쪽 버튼 누르기
-    Win32.mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero); // 왼쪽 버튼 떼기
-    Win32.SetCursorPos(saved.X, saved.Y);              // 원래 위치 복원
-}
-```
-
-### 메시지 파싱 (ParseKakaoText)
-
-```csharp
-private static List<ChatMsg> ParseKakaoText(string text)
-{
-    var pattern = @"^\[(.+?)\] \[(오전|오후) (\d{1,2}:\d{2})\] (.+)$";
-    // 그룹1=보낸 사람, 그룹2=오전/오후, 그룹3=시간, 그룹4=내용
-    // → ChatMsg { Sender, Content, Time }으로 변환
-}
-```
-
-> ⚠️ **단점**: 이 방식은 채팅방 창을 잠깐 활성화해야 해서 화면을 빼앗습니다 (~1초).
-
----
-
-## 8. 메시지 DB 저장 — `MessageDb.cs`
-
-### EF Core + SQLite (JPA와 거의 동일)
-
-```csharp
-// ---- 엔티티 (JPA의 @Entity) ----
-public class ChatMessage
-{
-    public int Id { get; set; }               // PK (자동 증가)
-    public string ChatRoomName { get; set; }   // 채팅방 이름
-    public string Sender { get; set; }         // 보낸 사람
-    public string Content { get; set; }        // 내용
-    public DateTime MessageTime { get; set; }  // 메시지 시간
-    public DateTime CreatedAt { get; set; }    // 저장 시간
-    public bool IsOutgoing { get; set; }       // 보낸/받은 메시지 구분
-}
-
-// ---- DbContext (JPA의 EntityManager) ----
-public class AppDb : DbContext
-{
-    public DbSet<ChatMessage> Messages { get; set; }
-
-    protected override void OnConfiguring(DbContextOptionsBuilder opt)
-        => opt.UseSqlite("Data Source=messages.db");
-}
-
-// ---- 서비스 클래스 ----
-public class MessageDb
-{
-    private readonly AppDb _db = new();
-
-    public void Initialize() => _db.Database.EnsureCreated(); // 테이블 자동 생성
-    public void Save(string chatRoom, string sender, string content, DateTime time, bool isOutgoing)
-        => _db.Messages.Add(new ChatMessage { ... }); _db.SaveChanges();
-    public List<ChatMessage> GetRecent(int count = 20)
-        => _db.Messages.OrderByDescending(m => m.CreatedAt).Take(count).ToList();
-}
-```
-
-| C# (EF Core) | Java (Spring) |
-|:---|:---|
-| `AppDb : DbContext` | `EntityManager` |
-| `ChatMessage` 클래스 | `@Entity` 클래스 |
-| `_db.Messages.Add()` | `repository.save()` |
-| `_db.SaveChanges()` | `@Transactional` 커밋 |
-| `EnsureCreated()` | `hibernate.ddl-auto=update` |
-
----
-
-## 9. 프로그램 진입점 — `Program.cs`
+## 7. 프로그램 진입점 — `Program.cs`
 
 콘솔 기반의 CLI 메뉴 프로그램입니다.
 
@@ -379,26 +240,21 @@ public class MessageDb
 
 1. 채팅방 목록 보기     → ChatFinder.Find()
 2. 메시지 보내기        → MessageSender.Send()
-3. 메시지 읽기          → MessageReader.Read()
-4. DB 저장된 메시지 보기 → MessageDb.GetRecent()
 0. 종료
 ```
 
 - 채팅방 선택은 `SelectChatRoom()` 헬퍼로 공통 처리
-- 보낸 메시지(`isOutgoing: true`)와 읽은 메시지 모두 DB에 자동 저장
 
 ---
 
-## 10. 프로젝트 구조 한눈에 보기
+## 8. 프로젝트 구조 한눈에 보기
 
 ```
 KakaoTalkAutomation/
 │
 ├── Win32.cs           ← Win32 API 함수 모음 (DllImport + 편의 래퍼)
 ├── ChatFinder.cs      ← 카카오톡 채팅방 핸들 찾기
-├── MessageReader.cs   ← 메시지 읽기 (클릭 → Ctrl+A → Ctrl+C → 파싱)
 ├── MessageSender.cs   ← 메시지 보내기 (클립보드 + Ctrl+V + Enter)
-├── MessageDb.cs       ← DB 저장 (EF Core + SQLite)
 ├── Program.cs         ← 진입점 (CLI 메뉴)
 └── KakaoTalkAutomation.csproj ← 프로젝트 설정
 ```
@@ -409,20 +265,17 @@ KakaoTalkAutomation/
 |:---|:---|:---|
 | `Win32.cs` | OS 네이티브 함수 선언 | JNI 래퍼 |
 | `ChatFinder.cs` | 카카오톡 창 탐색 | Repository (조회) |
-| `MessageReader.cs` | 메시지 읽기 | Service (비즈니스 로직) |
 | `MessageSender.cs` | 메시지 보내기 | Service (비즈니스 로직) |
-| `MessageDb.cs` | DB 저장/조회 | Repository + Entity + JPA Config |
 | `Program.cs` | CLI 메뉴 + 메인 루프 | Controller + main() |
 
 ### 설계 특징
 
 - **DI 없음**: 모든 핵심 클래스는 `static class`로 작성 → 의존성 주입 불필요
-- **단순한 구조**: 폴더 분리 없이 7개 파일로 구성 → 진입 장벽 최소화
-- **유일한 외부 패키지**: `Microsoft.EntityFrameworkCore.Sqlite` 하나뿐
+- **단순한 구조**: 폴더 분리 없이 4개 핵심 파일로 구성 → 진입 장벽 최소화
 
 ---
 
-## 11. Win32.cs 주요 함수 정리
+## 9. Win32.cs 주요 함수 정리
 
 ### 원시 API (DllImport)
 
@@ -455,7 +308,7 @@ KakaoTalkAutomation/
 
 ---
 
-## 12. 직접 만들어보기 순서 (추천)
+## 10. 직접 만들어보기 순서 (추천)
 
 처음부터 만들어본다면 이 순서를 추천합니다:
 
@@ -482,23 +335,7 @@ rooms.ForEach(r => Console.WriteLine(r.Name));
 MessageSender.Send(chatRoomHandle, "안녕하세요!");
 ```
 
-### Step 4: 메시지 읽기 (MessageReader)
-
-```csharp
-// ClickMessageArea → PressKeys(Ctrl+A, Ctrl+C) → Clipboard.GetText → 정규식 파싱
-var msgs = MessageReader.Read(chatRoomHandle);
-```
-
-### Step 5: DB 저장 (MessageDb)
-
-```csharp
-// EF Core + SQLite로 메시지 저장 (JPA와 거의 동일)
-var db = new MessageDb();
-db.Initialize();
-db.Save("홍길동", "나", "안녕!", DateTime.Now, true);
-```
-
-### Step 6: CLI 메뉴로 통합 (Program.cs)
+### Step 4: CLI 메뉴로 통합 (Program.cs)
 
 ```csharp
 // while 루프 + switch로 메뉴 구성
@@ -507,7 +344,7 @@ db.Save("홍길동", "나", "안녕!", DateTime.Now, true);
 
 ---
 
-## 13. 자주 겪는 문제와 해결법
+## 11. 자주 겪는 문제와 해결법
 
 ### Q: 카카오톡 창을 찾지 못해요
 **A**: 채팅방을 **"팝업 창"으로 열어야** 합니다. 카카오톡 메인 창 안에 있는 채팅은 감지가 안 됩니다.
@@ -524,5 +361,3 @@ db.Save("홍길동", "나", "안녕!", DateTime.Now, true);
 ### Q: 클래스명이 문서와 다릅니다
 **A**: 카카오톡 버전에 따라 클래스명이 변경될 수 있습니다. `EnumChildWindows`로 직접 확인하세요.
 
-### Q: 메시지 읽기가 불안정해요
-**A**: `Thread.Sleep()` 시간을 늘려보세요. 카카오톡이 반응하기 전에 다음 동작이 실행되면 실패합니다.
