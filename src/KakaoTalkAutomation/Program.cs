@@ -3,28 +3,22 @@
 /// <summary>
 /// 카카오톡 자동화 프로그램 진입점
 ///
-/// 메뉴:
 ///   1. 채팅방 목록 보기
 ///   2. 메시지 보내기
-///   3. 메시지 읽기
 ///   0. 종료
 /// </summary>
 class Program
 {
-    static readonly MessageDb _db = new();
 
     static void Main()
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
-        _db.Initialize();
         Console.WriteLine("=== 카카오톡 자동화 프로그램 ===\n");
 
         while (true)
         {
             Console.WriteLine("1. 채팅방 목록 보기");
             Console.WriteLine("2. 메시지 보내기");
-            Console.WriteLine("3. 메시지 읽기");
-            Console.WriteLine("4. DB 저장된 메시지 보기");
             Console.WriteLine("0. 종료");
             Console.Write("\n선택: ");
 
@@ -32,8 +26,6 @@ class Program
             {
                 case "1": ShowChatRooms(); break;
                 case "2": HandleSend(); break;
-                case "3": HandleRead(); break;
-                case "4": ShowSavedMessages(); break;
                 case "0": return;
             }
             Console.WriteLine();
@@ -65,46 +57,6 @@ class Program
 
         var ok = MessageSender.Send(room.Value.Handle, msg);
         Console.WriteLine(ok ? "  ✅ 전송 성공!" : "  ❌ 전송 실패");
-
-        if (ok)
-            _db.Save(room.Value.Name, "나", msg, DateTime.Now, isOutgoing: true);
-    }
-
-    // ---- 3. 메시지 읽기 ----
-    static void HandleRead()
-    {
-        var room = SelectChatRoom();
-        if (room == null) return;
-
-        Console.WriteLine("  메시지 읽는 중... (잠깐 화면을 뺏습니다)");
-        var msgs = MessageReader.Read(room.Value.Handle);
-
-        if (msgs.Count == 0)
-        {
-            Console.WriteLine("  메시지를 읽지 못했습니다.");
-            return;
-        }
-
-        Console.WriteLine($"\n  === {msgs.Count}개 메시지 ===");
-        foreach (var m in msgs)
-        {
-            Console.WriteLine($"  [{m.Time:HH:mm}] {m.Sender}: {m.Content}");
-            _db.Save(room.Value.Name, m.Sender, m.Content, m.Time, isOutgoing: false);
-        }
-        Console.WriteLine($"  ✅ DB에 {msgs.Count}개 저장 완료");
-    }
-
-    // ---- 4. 저장된 메시지 ----
-    static void ShowSavedMessages()
-    {
-        var msgs = _db.GetRecent();
-        if (msgs.Count == 0) { Console.WriteLine("  저장된 메시지가 없습니다."); return; }
-
-        foreach (var m in msgs)
-        {
-            var dir = m.IsOutgoing ? "→" : "←";
-            Console.WriteLine($"  [{m.MessageTime:MM-dd HH:mm}] {dir} {m.Sender}: {m.Content}");
-        }
     }
 
     // ---- 채팅방 선택 헬퍼 ----

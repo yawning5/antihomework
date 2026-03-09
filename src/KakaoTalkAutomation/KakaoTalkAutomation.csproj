@@ -8,9 +8,6 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
-  <ItemGroup>
-    <!-- DB 저장용 (이것만 있으면 됨) -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.0" />
-  </ItemGroup>
+
 
 </Project>
