@@ -64,3 +64,12 @@
   - `output_v7/`
 - 비고:
   - `Ctrl+F` 후 채팅방 이름 붙여넣고 Enter 전에 1초 대기
+
+## output_v8
+
+- 날짜: 2026-03-09
+- 목적: WinForms 클라이언트 전환 및 PostgreSQL 연결 설정 기능 추가
+- 산출물:
+  - `output_v8/`
+- 비고:
+  - PostgreSQL 연결 정보 저장, 연결 테스트, SQL 조회, 카카오톡 수동 전송 UI 포함
